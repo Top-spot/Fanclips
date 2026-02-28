@@ -71,7 +71,7 @@ export default function ClipDetailPage() {
     const url = `${window.location.origin}/clip/${clip.id}`;
     const title = clip.ai_title || clip.title;
     if (navigator.share) {
-      try { await navigator.share({ title, url }); } catch {}
+      try { await navigator.share({ title, url }); } catch { /* user cancelled or share failed */ }
     } else {
       await navigator.clipboard.writeText(url);
     }

@@ -82,6 +82,7 @@ This project is built with:
 - Vite
 - TypeScript
 - React
+- Supabase (auth, database, storage)
 - shadcn-ui
 - Tailwind CSS
 
