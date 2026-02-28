@@ -1,6 +1,31 @@
-# Welcome to your Lovable project
+# Fan Flash Moments (Fanclips)
 
-## Project info
+A React + Vite + Supabase app for sharing and discovering fan clips.
+
+## Quick start (run locally)
+
+1. **Install dependencies:** `npm install`
+2. **Environment:** Copy `.env.example` to `.env` and fill in your [Supabase](https://supabase.com) project URL and anon key.
+3. **Start dev server:** `npm run dev` — app runs at http://localhost:5173
+
+## Connect to GitHub
+
+If this project is not yet on GitHub:
+
+1. Create a **new repository** on [github.com](https://github.com/new) (empty, no README).
+2. In this folder, add the remote and push (replace `YOUR_USERNAME` and `YOUR_REPO` with your repo):
+
+   ```sh
+   git branch -M main
+   git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+   git push -u origin main
+   ```
+
+If you use GitHub CLI (`gh`): run `gh auth login`, then `gh repo create --source=. --remote=origin --push`.
+
+---
+
+## Project info (Lovable)
 
 **URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
 
