@@ -1,7 +1,0 @@
-project_id = "lejnkwzmwswduimtdnbg"
-
-[functions.process-clip-ai]
-verify_jwt = false
-
-[functions.redeem-reward]
-verify_jwt = false
