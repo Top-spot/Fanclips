@@ -1,0 +1,13 @@
+project_id = "lejnkwzmwswduimtdnbg"
+
+[functions.process-clip-ai]
+verify_jwt = false
+
+[functions.redeem-reward]
+verify_jwt = false
+
+[functions.push-vapid-key]
+verify_jwt = false
+
+[functions.send-push]
+verify_jwt = false

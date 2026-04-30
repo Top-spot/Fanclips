@@ -1,0 +1,201 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Dark & Electric — FanCam Design System */
+    --background: 220 20% 6%;
+    --foreground: 0 0% 98%;
+
+    --card: 220 18% 9%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 220 18% 9%;
+    --popover-foreground: 0 0% 98%;
+
+    /* Electric Blue primary */
+    --primary: 210 100% 56%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Stadium Yellow accent */
+    --accent: 47 100% 55%;
+    --accent-foreground: 220 20% 6%;
+
+    --secondary: 220 16% 14%;
+    --secondary-foreground: 0 0% 90%;
+
+    --muted: 220 16% 14%;
+    --muted-foreground: 220 10% 55%;
+
+    --destructive: 0 80% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 14% 18%;
+    --input: 220 14% 18%;
+    --ring: 210 100% 56%;
+
+    --radius: 0.75rem;
+
+    /* Custom FanCam tokens */
+    --electric-blue: 210 100% 56%;
+    --electric-blue-glow: 210 100% 70%;
+    --stadium-yellow: 47 100% 55%;
+    --neon-green: 142 76% 45%;
+    --deep-black: 220 20% 4%;
+    --charcoal: 220 18% 9%;
+    --surface: 220 16% 12%;
+    --surface-hover: 220 16% 16%;
+
+    /* Gradients */
+    --gradient-electric: linear-gradient(135deg, hsl(210 100% 56%), hsl(240 100% 65%));
+    --gradient-yellow: linear-gradient(135deg, hsl(47 100% 55%), hsl(35 100% 60%));
+    --gradient-dark: linear-gradient(180deg, hsl(220 20% 6%), hsl(220 20% 4%));
+    --gradient-card: linear-gradient(145deg, hsl(220 18% 11%), hsl(220 18% 8%));
+
+    /* Glows */
+    --glow-blue: 0 0 20px hsl(210 100% 56% / 0.4), 0 0 40px hsl(210 100% 56% / 0.15);
+    --glow-yellow: 0 0 20px hsl(47 100% 55% / 0.4), 0 0 40px hsl(47 100% 55% / 0.15);
+    --shadow-card: 0 4px 24px hsl(220 20% 2% / 0.6);
+
+    --sidebar-background: 220 20% 6%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 210 100% 56%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 16% 14%;
+    --sidebar-accent-foreground: 0 0% 90%;
+    --sidebar-border: 220 14% 18%;
+    --sidebar-ring: 210 100% 56%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
+}
+
+@layer utilities {
+  .text-electric {
+    color: hsl(var(--electric-blue));
+  }
+
+  .text-yellow {
+    color: hsl(var(--stadium-yellow));
+  }
+
+  .bg-electric {
+    background: hsl(var(--electric-blue));
+  }
+
+  .bg-yellow {
+    background: hsl(var(--stadium-yellow));
+  }
+
+  .border-electric {
+    border-color: hsl(var(--electric-blue));
+  }
+
+  .glow-blue {
+    box-shadow: var(--glow-blue);
+  }
+
+  .glow-yellow {
+    box-shadow: var(--glow-yellow);
+  }
+
+  .gradient-electric {
+    background: var(--gradient-electric);
+  }
+
+  .gradient-yellow {
+    background: var(--gradient-yellow);
+  }
+
+  .gradient-card {
+    background: var(--gradient-card);
+  }
+
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .pulse-blue {
+    animation: pulseBlue 2s ease-in-out infinite;
+  }
+
+  @keyframes pulseBlue {
+    0%, 100% { box-shadow: 0 0 10px hsl(210 100% 56% / 0.3); }
+    50% { box-shadow: 0 0 25px hsl(210 100% 56% / 0.7), 0 0 50px hsl(210 100% 56% / 0.3); }
+  }
+
+  .pulse-yellow {
+    animation: pulseYellow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulseYellow {
+    0%, 100% { box-shadow: 0 0 10px hsl(47 100% 55% / 0.3); }
+    50% { box-shadow: 0 0 25px hsl(47 100% 55% / 0.7), 0 0 50px hsl(47 100% 55% / 0.3); }
+  }
+
+  .ai-shimmer {
+    background: linear-gradient(90deg,
+      hsl(220 18% 9%),
+      hsl(210 100% 56% / 0.15),
+      hsl(220 18% 9%)
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+
+  .bounce-tap {
+    animation: bounce-tap 0.3s ease-out forwards;
+  }
+
+  @keyframes bounce-tap {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.3); }
+    100% { transform: scale(1.1); }
+  }
+
+  .ring-pulse::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 9999px;
+    border: 2px solid hsl(var(--electric-blue));
+    animation: ring-pulse 0.5s ease-out forwards;
+    pointer-events: none;
+  }
+
+  @keyframes ring-pulse {
+    0% { transform: scale(1); opacity: 0.8; }
+    100% { transform: scale(1.4); opacity: 0; }
+  }
+}
