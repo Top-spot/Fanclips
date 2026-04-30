@@ -1,0 +1,4 @@
+ALTER TABLE public.profiles
+ADD COLUMN IF NOT EXISTS preferred_sports TEXT[] NOT NULL DEFAULT '{}',
+ADD COLUMN IF NOT EXISTS preferred_teams TEXT[] NOT NULL DEFAULT '{}',
+ADD COLUMN IF NOT EXISTS preferred_locations TEXT[] NOT NULL DEFAULT '{}';
