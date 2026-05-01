@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Heart, Share2, Play, Zap, MapPin, Repeat2 } from "lucide-react";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { ArrowLeft, Heart, Share2, Play, Zap, MapPin, Repeat2, Mic } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import CommentSection from "@/components/CommentSection";
 import { getYouTubeEmbedUrl } from "@/lib/video";
 import { DEMO_CLIPS } from "@/lib/demoClips";
+import { getClipById, toggleClipLike } from "@/services/clipsService";
+import { getCommentaryById } from "@/services/clipCommentaryService";
+import type { ClipCommentaryFeature } from "@/lib/clipCommentary/types";
+import { CommentaryPlaybackPanel } from "@/components/clip-commentary/CommentaryPlaybackPanel";
+import { Button } from "@/components/ui/button";
 
 interface ClipDetail {
   id: string;
@@ -28,6 +33,7 @@ interface ClipDetail {
 export default function ClipDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, refreshProfile } = useAuth();
   const [clip, setClip] = useState<ClipDetail | null>(null);
   const [liked, setLiked] = useState(false);
@@ -35,6 +41,17 @@ export default function ClipDetailPage() {
   const [repostCount, setRepostCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
+  const [playbackFeature, setPlaybackFeature] = useState<ClipCommentaryFeature | null>(null);
+
+  const reactionParam = searchParams.get("reaction");
+
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    navigate("/");
+  };
 
   const fetchClip = useCallback(async () => {
     if (!id) {
@@ -61,11 +78,8 @@ export default function ClipDetailPage() {
     }
 
     setLoading(true);
-    const { data } = await supabase
-      .from("clips")
-      .select("id, title, caption, section_tag, game_tag, thumbnail_url, video_url, likes_count, ai_processed, ai_title, ai_caption, user_id, is_hidden")
-      .eq("id", id!)
-      .single();
+    const clipResult = await getClipById(id);
+    const data = clipResult.data;
 
     if (!data) { setLoading(false); return; }
     const c = data as unknown as Omit<ClipDetail, "profiles">;
@@ -140,16 +154,39 @@ export default function ClipDetailPage() {
     void fetchClip();
   }, [fetchClip]);
 
+  useEffect(() => {
+    if (!reactionParam || !id || !clip) {
+      setPlaybackFeature(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const res = await getCommentaryById(reactionParam, id);
+      if (cancelled) return;
+      if (!res.error && res.data) setPlaybackFeature(res.data);
+      else setPlaybackFeature(null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reactionParam, id, clip]);
+
   const handleLike = async () => {
     if (clip?.id.startsWith("demo-clip-")) return;
     if (!user) { navigate("/auth"); return; }
-    const result = await supabase.rpc("toggle_clip_like", { p_clip_id: id!, p_user_id: user.id });
-    const d = result.data as { liked: boolean; likes_count: number } | null;
-    if (d) {
-      setLiked(d.liked);
-      setLikesCount(d.likes_count);
+    const optimisticLiked = !liked;
+    const optimisticCount = Math.max(0, likesCount + (optimisticLiked ? 1 : -1));
+    setLiked(optimisticLiked);
+    setLikesCount(optimisticCount);
+    const result = await toggleClipLike(id!, user.id);
+    if (!result.error && result.data) {
+      setLiked(result.data.liked);
+      setLikesCount(result.data.likes_count);
       void refreshProfile();
+      return;
     }
+    setLiked(!optimisticLiked);
+    setLikesCount(Math.max(0, optimisticCount + (optimisticLiked ? -1 : 1)));
   };
 
   const handleShare = async () => {
@@ -200,7 +237,7 @@ export default function ClipDetailPage() {
     <div className="h-screen flex flex-col bg-background">
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
-        <button onClick={() => navigate(-1)} className="p-2 rounded-full bg-secondary border border-border">
+        <button onClick={handleBack} className="p-2 rounded-full bg-secondary border border-border">
           <ArrowLeft className="w-5 h-5 text-foreground" />
         </button>
         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -274,6 +311,35 @@ export default function ClipDetailPage() {
         {(clip.ai_caption || clip.caption) && (
           <p className="text-sm text-muted-foreground mb-2">{clip.ai_caption || clip.caption}</p>
         )}
+        {playbackFeature && (
+          <div className="mb-3">
+            <CommentaryPlaybackPanel
+              feature={playbackFeature}
+              videoUrl={clip.video_url}
+              onDismiss={() => {
+                setPlaybackFeature(null);
+                searchParams.delete("reaction");
+                setSearchParams(searchParams, { replace: true });
+              }}
+            />
+          </div>
+        )}
+
+        {user && clip.user_id !== user.id && !clip.id.startsWith("demo-clip-") && (
+          <div className="mb-3">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="w-full h-10 gap-2 border border-electric/30 bg-electric/10 hover:bg-electric/20"
+              onClick={() => navigate(`/clip/${clip.id}/reaction`)}
+            >
+              <Mic className="w-4 h-4 text-electric" />
+              Record live reaction
+            </Button>
+          </div>
+        )}
+
         <div className="flex items-center gap-2 flex-wrap">
           {clip.section_tag && (
             <div className="flex items-center gap-1 bg-secondary rounded-full px-2 py-0.5">

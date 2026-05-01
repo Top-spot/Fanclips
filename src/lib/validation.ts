@@ -32,6 +32,8 @@ export const commentSchema = z.object({
     .max(500, "Comment must be under 500 characters"),
 });
 
+export const commentIdSchema = z.string().uuid("Invalid comment target");
+
 // Profile validation
 export const profileSchema = z.object({
   username: z
@@ -48,6 +50,44 @@ export const profileSchema = z.object({
     .max(180, "About must be under 180 characters")
     .refine((value) => (value ? value.split(/\s+/).filter(Boolean).length <= 30 : true), "About must be 30 words or less")
     .optional(),
+});
+
+export const adminRewardRuleSchema = z.object({
+  key: z.string().trim().min(1).max(64),
+  label: z.string().trim().min(1, "Label is required").max(80, "Label must be under 80 characters"),
+  description: z.string().trim().max(280, "Description must be under 280 characters").nullable(),
+  points_value: z
+    .number()
+    .int("Points must be a whole number")
+    .min(0, "Points cannot be negative")
+    .max(100000, "Points value is too large"),
+  enabled: z.boolean(),
+});
+
+export const rewardMutationSchema = z.object({
+  name: z.string().trim().min(1, "Reward name is required").max(80, "Reward name must be under 80 characters"),
+  description: z.string().trim().max(280, "Description must be under 280 characters").nullable(),
+  points_cost: z
+    .number()
+    .int("Points cost must be a whole number")
+    .min(1, "Points cost must be at least 1")
+    .max(1000000, "Points cost is too large"),
+  category: z
+    .string()
+    .trim()
+    .min(1, "Category is required")
+    .max(32, "Category must be under 32 characters")
+    .regex(/^[a-zA-Z0-9_\s-]+$/, "Use letters, numbers, spaces, underscores, or dashes"),
+  active: z.boolean(),
+});
+
+export const rewardTransferSchema = z.object({
+  amount: z
+    .number()
+    .int("Amount must be a whole number")
+    .min(1, "Amount must be at least 1")
+    .max(100000, "Amount is too large"),
+  note: z.string().trim().max(80, "Note must be 80 characters or less"),
 });
 
 // File validation

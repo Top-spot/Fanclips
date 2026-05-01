@@ -2,8 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Bell } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
+import { cn } from "@/lib/utils";
+import { countUnreadNotifications } from "@/services/notificationsService";
 
-export default function NotificationBell({ onClick }: { onClick: () => void }) {
+export default function NotificationBell({
+  onClick,
+  className,
+}: {
+  onClick: () => void;
+  className?: string;
+}) {
   const { user } = useAuth();
   const [count, setCount] = useState(0);
 
@@ -12,12 +20,10 @@ export default function NotificationBell({ onClick }: { onClick: () => void }) {
       setCount(0);
       return;
     }
-    const { count: c } = await supabase
-      .from("notifications")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", user.id)
-      .eq("read", false);
-    setCount(c ?? 0);
+    const result = await countUnreadNotifications(user.id);
+    if (!result.error) {
+      setCount(result.data);
+    }
   }, [user]);
 
   useEffect(() => {
@@ -28,8 +34,8 @@ export default function NotificationBell({ onClick }: { onClick: () => void }) {
 
     void fetchCount();
     const channel = supabase
-      .channel("notif-count")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${user.id}` }, () => {
+      .channel(`notif-count-${user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${user.id}` }, () => {
         void fetchCount();
       })
       .subscribe();
@@ -39,7 +45,14 @@ export default function NotificationBell({ onClick }: { onClick: () => void }) {
   if (!user) return null;
 
   return (
-    <button onClick={onClick} className="relative p-2 rounded-full bg-secondary border border-border">
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "relative rounded-full border border-border bg-secondary p-2",
+        className,
+      )}
+    >
       <Bell className="w-5 h-5 text-foreground" />
       {count > 0 && (
         <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-bold flex items-center justify-center">

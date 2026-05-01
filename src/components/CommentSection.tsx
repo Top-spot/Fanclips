@@ -7,7 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
-import { commentSchema } from "@/lib/validation";
+import { commentIdSchema, commentSchema } from "@/lib/validation";
+import {
+  createComment,
+  deleteComment,
+  listCommentProfiles,
+  listCommentsByClip,
+} from "@/services/commentsService";
 
 interface Comment {
   id: string;
@@ -15,38 +21,37 @@ interface Comment {
   created_at: string;
   user_id: string;
   parent_comment_id: string | null;
+  /** Parent comment author’s @username when this row is a reply */
+  replyToUsername: string | null;
   profiles: { username: string; avatar_url: string | null } | null;
 }
 
-export default function CommentSection({ clipId, clipOwnerId }: { clipId: string; clipOwnerId: string }) {
+export default function CommentSection({ clipId }: { clipId: string; clipOwnerId: string }) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
-  const { user, profile } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const fetchComments = useCallback(async () => {
-    let { data, error } = await supabase
-      .from("comments")
-      .select("id, content, created_at, user_id, parent_comment_id")
-      .eq("clip_id", clipId)
-      .order("created_at", { ascending: true })
-      .limit(300);
-    if (error && error.message.toLowerCase().includes("parent_comment_id")) {
-      const fallback = await supabase
-        .from("comments")
-        .select("id, content, created_at, user_id")
-        .eq("clip_id", clipId)
-        .order("created_at", { ascending: true })
-        .limit(300);
-      data = fallback.data?.map((row) => ({ ...row, parent_comment_id: null })) as typeof data;
-      error = fallback.error as typeof error;
-    }
-    if (error || !data) return;
+  const fetchComments = useCallback(async (withLoader = false) => {
+    if (withLoader) setLoading(true);
+    else setRefreshing(true);
+    setLoadError(null);
 
-    const rows = data as Array<{
+    const commentsRes = await listCommentsByClip(clipId);
+    if (commentsRes.error) {
+      setLoadError("Could not load comments. Please retry.");
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    const rows = commentsRes.data as Array<{
       id: string;
       content: string;
       created_at: string;
@@ -57,38 +62,48 @@ export default function CommentSection({ clipId, clipOwnerId }: { clipId: string
     const profileMap = new Map<string, { username: string; avatar_url: string | null }>();
 
     if (userIds.length > 0) {
-      const { data: profiles } = await supabase
-        .from("profiles")
-        .select("user_id, username, avatar_url")
-        .in("user_id", userIds);
-      profiles?.forEach((p) => {
+      const profilesRes = await listCommentProfiles(userIds);
+      profilesRes.data?.forEach((p) => {
         profileMap.set(p.user_id, { username: p.username, avatar_url: p.avatar_url });
       });
     }
 
+    const rowById = new Map(rows.map((r) => [r.id, r]));
+    const replyToUsernameFor = (parentId: string | null): string | null => {
+      if (!parentId) return null;
+      const parent = rowById.get(parentId);
+      if (!parent) return null;
+      return profileMap.get(parent.user_id)?.username ?? null;
+    };
+
     setComments(
       rows.map((r) => ({
         ...r,
+        replyToUsername: replyToUsernameFor(r.parent_comment_id),
         profiles: profileMap.get(r.user_id) ?? null,
       }))
     );
+    setLoading(false);
+    setRefreshing(false);
   }, [clipId]);
 
   useEffect(() => {
-    fetchComments();
+    void fetchComments(true);
     const channel = supabase
       .channel(`comments-${clipId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "comments", filter: `clip_id=eq.${clipId}` }, () => {
-        fetchComments();
+        void fetchComments(false);
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [clipId, fetchComments]);
 
   const commentsByParent = useMemo(() => {
+    const ids = new Set(comments.map((c) => c.id));
     const map = new Map<string | null, Comment[]>();
     comments.forEach((c) => {
-      const key = c.parent_comment_id;
+      const parentId = c.parent_comment_id;
+      const key = parentId && ids.has(parentId) ? parentId : null;
       const arr = map.get(key) ?? [];
       arr.push(c);
       map.set(key, arr);
@@ -105,51 +120,55 @@ export default function CommentSection({ clipId, clipOwnerId }: { clipId: string
       return;
     }
 
+    const replyingToId = replyTo;
+    const parentAuthor = replyingToId
+      ? comments.find((c) => c.id === replyingToId)?.profiles?.username ?? null
+      : null;
+
+    const optimisticId = `optimistic-${Date.now()}`;
+    const optimisticComment: Comment = {
+      id: optimisticId,
+      content: result.data.content,
+      created_at: new Date().toISOString(),
+      user_id: user.id,
+      parent_comment_id: replyingToId,
+      replyToUsername: parentAuthor,
+      profiles: {
+        username: user.user_metadata?.username ?? "you",
+        avatar_url: user.user_metadata?.avatar_url ?? null,
+      },
+    };
+    setComments((prev) => [...prev, optimisticComment]);
+    setText("");
+    setReplyTo(null);
     setSending(true);
     try {
-      const payload: Record<string, unknown> = {
+      const parentCommentId =
+        replyingToId &&
+        commentIdSchema.safeParse(replyingToId).success &&
+        comments.some((c) => c.id === replyingToId)
+          ? replyingToId
+          : undefined;
+      const created = await createComment({
         clip_id: clipId,
         user_id: user.id,
         content: result.data.content,
-      };
-      if (replyTo) payload.parent_comment_id = replyTo;
-
-      let { error } = await supabase.from("comments").insert(payload);
-      if (error && payload.parent_comment_id && error.message.toLowerCase().includes("parent_comment_id")) {
-        delete payload.parent_comment_id;
-        const fallback = await supabase.from("comments").insert(payload);
-        error = fallback.error;
-        if (!error) {
+        parent_comment_id: parentCommentId,
+      });
+      if (created.error) {
+        if (replyingToId && created.error.toLowerCase().includes("parent_comment_id")) {
           toast({
             title: "Reply posted as comment",
             description: "Apply the latest migration to enable nested replies.",
           });
         }
+        throw new Error(created.error);
       }
-      if (error) throw error;
 
-      const parent = replyTo ? comments.find((c) => c.id === replyTo) : null;
-      setText("");
-      setReplyTo(null);
-
-      // Create notification for clip owner (if not self)
-      if (clipOwnerId && clipOwnerId !== user.id) {
-        await supabase.from("notifications").insert({
-          user_id: clipOwnerId,
-          type: "comment",
-          message: `@${profile?.username || "someone"} commented on your clip 💬`,
-          reference_id: clipId,
-        });
-      }
-      if (parent && parent.user_id !== user.id && parent.user_id !== clipOwnerId) {
-        await supabase.from("notifications").insert({
-          user_id: parent.user_id,
-          type: "comment",
-          message: `@${profile?.username || "someone"} replied to your comment ↩️`,
-          reference_id: clipId,
-        });
-      }
+      await fetchComments(false);
+      toast({ title: "Comment posted", description: "Interaction points were applied." });
     } catch {
+      setComments((prev) => prev.filter((comment) => comment.id !== optimisticId));
       toast({ title: "Failed to post comment", variant: "destructive" });
     } finally {
       setSending(false);
@@ -157,10 +176,15 @@ export default function CommentSection({ clipId, clipOwnerId }: { clipId: string
   };
 
   const handleDelete = async (id: string) => {
-    const { error } = await supabase.from("comments").delete().eq("id", id);
-    if (error) {
+    const previous = comments;
+    setComments((prev) => prev.filter((comment) => comment.id !== id && comment.parent_comment_id !== id));
+    const deleted = await deleteComment(id);
+    if (deleted.error) {
+      setComments(previous);
       toast({ title: "Failed to delete", variant: "destructive" });
+      return;
     }
+    await fetchComments(false);
   };
 
   const timeAgo = (d: string) => {
@@ -173,8 +197,11 @@ export default function CommentSection({ clipId, clipOwnerId }: { clipId: string
 
   const renderComment = (c: Comment, depth = 0): JSX.Element => {
     const children = commentsByParent.get(c.id) ?? [];
+    const sortedChildren = [...children].sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    );
     return (
-      <div key={c.id} className={depth > 0 ? "ml-5 mt-2" : ""}>
+      <div key={c.id} className={depth > 0 ? "ml-4 pl-3 border-l border-border/60 mt-2" : ""}>
         <div className="flex items-start gap-2.5">
           <Avatar className="w-7 h-7 mt-0.5 border border-border">
             <AvatarImage src={c.profiles?.avatar_url ?? undefined} />
@@ -183,6 +210,14 @@ export default function CommentSection({ clipId, clipOwnerId }: { clipId: string
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-semibold text-foreground">@{c.profiles?.username ?? "fan"}</span>
+              {c.replyToUsername && (
+                <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1 rounded-full bg-muted/50 px-2 py-0.5">
+                  <CornerDownRight className="w-3 h-3 shrink-0 text-electric" aria-hidden />
+                  <span>
+                    replying to <span className="font-semibold text-foreground">@{c.replyToUsername}</span>
+                  </span>
+                </span>
+              )}
               <span className="text-xs text-muted-foreground">{timeAgo(c.created_at)}</span>
               {user && (
                 <button
@@ -195,7 +230,7 @@ export default function CommentSection({ clipId, clipOwnerId }: { clipId: string
                 </button>
               )}
             </div>
-            <p className="text-sm text-foreground/90 break-words">{c.content}</p>
+            <p className="text-sm text-foreground/90 break-words mt-0.5">{c.content}</p>
           </div>
           {user?.id === c.user_id && (
             <button onClick={() => handleDelete(c.id)} className="text-muted-foreground hover:text-destructive p-1">
@@ -203,7 +238,9 @@ export default function CommentSection({ clipId, clipOwnerId }: { clipId: string
             </button>
           )}
         </div>
-        {children.length > 0 && <div className="mt-1 space-y-1">{children.map((child) => renderComment(child, depth + 1))}</div>}
+        {sortedChildren.length > 0 && (
+          <div className="mt-2 space-y-1">{sortedChildren.map((child) => renderComment(child, depth + 1))}</div>
+        )}
       </div>
     );
   };
@@ -214,12 +251,22 @@ export default function CommentSection({ clipId, clipOwnerId }: { clipId: string
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-1 min-h-0 overflow-y-auto space-y-3 px-4 py-3 pb-2">
-        {topLevel.length === 0 && (
+        {loading && <p className="text-muted-foreground text-sm text-center py-6">Loading comments...</p>}
+        {loadError && !loading && (
+          <div className="text-center py-6">
+            <p className="text-sm text-destructive mb-3">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={() => void fetchComments(true)}>Retry</Button>
+          </div>
+        )}
+        {!loading && !loadError && topLevel.length === 0 && (
           <p className="text-muted-foreground text-sm text-center py-6">No comments yet. Be the first! 💬</p>
         )}
-        {topLevel.map((c) => renderComment(c))}
+        {!loadError && topLevel.map((c) => renderComment(c))}
       </div>
       <div className="sticky bottom-0 z-10 px-4 pt-2 pb-3 border-t border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/85">
+        {refreshing && !loading && !loadError && (
+          <p className="text-[11px] text-muted-foreground mb-1">Updating...</p>
+        )}
         {replyTarget && (
           <div className="mb-2 text-[11px] text-muted-foreground flex items-center justify-between">
             <span>Replying to @{replyTarget.profiles?.username ?? "fan"}</span>

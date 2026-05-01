@@ -3,6 +3,7 @@ import { Heart, MessageCircle, Star, Gift, Repeat2, UserPlus } from "lucide-reac
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import { useNavigate } from "react-router-dom";
+import { listNotifications, markNotificationRead } from "@/services/notificationsService";
 
 interface Notification {
   id: string;
@@ -21,13 +22,10 @@ export default function NotificationsPopover({ open, onClose }: { open: boolean;
 
   const fetchNotifications = useCallback(async () => {
     if (!user) return;
-    const { data } = await supabase
-      .from("notifications")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .limit(25);
-    setNotifications((data as Notification[] | null) ?? []);
+    const result = await listNotifications(user.id, 25);
+    if (!result.error && result.data) {
+      setNotifications(result.data as Notification[]);
+    }
   }, [user]);
 
   useEffect(() => {
@@ -46,8 +44,13 @@ export default function NotificationsPopover({ open, onClose }: { open: boolean;
   }, [open, onClose]);
 
   const handleTap = async (n: Notification) => {
+    if (!user) return;
     if (!n.read) {
-      await supabase.from("notifications").update({ read: true }).eq("id", n.id);
+      setNotifications((prev) => prev.map((item) => (item.id === n.id ? { ...item, read: true } : item)));
+      const result = await markNotificationRead(user.id, n.id);
+      if (result.error) {
+        setNotifications((prev) => prev.map((item) => (item.id === n.id ? { ...item, read: false } : item)));
+      }
     }
     onClose();
     if (n.type === "follow" && n.reference_id) {

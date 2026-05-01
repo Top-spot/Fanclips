@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { X, Heart, MessageCircle, Star, Gift, Repeat2, UserPlus } from "lucide-react";
+import { X, Heart, MessageCircle, Star, Gift, Repeat2, UserPlus, RefreshCw } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import { useNavigate } from "react-router-dom";
+import { useToast } from "@/hooks/use-toast";
+import {
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "@/services/notificationsService";
 
 interface Notification {
   id: string;
@@ -16,28 +22,46 @@ interface Notification {
 export default function NotificationsDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const fetchNotifications = useCallback(async () => {
+  const fetchNotifications = useCallback(async (opts?: { silent?: boolean }) => {
     if (!user) return;
-    const { data } = await supabase
-      .from("notifications")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .limit(50);
-    if (data) setNotifications(data as Notification[]);
-  }, [user]);
+    if (!opts?.silent) setLoading(true);
+    const result = await listNotifications(user.id, 50);
+    if (result.error && !opts?.silent) {
+      toast({ title: "Failed to load notifications", description: result.error, variant: "destructive" });
+    }
+    if (result.data) setNotifications(result.data as Notification[]);
+    if (!opts?.silent) setLoading(false);
+  }, [user, toast]);
 
   useEffect(() => {
     if (open && user) {
       void fetchNotifications();
+      const channel = supabase
+        .channel(`notif-drawer-${user.id}`)
+        .on("postgres_changes", { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${user.id}` }, () => {
+          void fetchNotifications({ silent: true });
+        })
+        .subscribe();
+      return () => { supabase.removeChannel(channel); };
     }
   }, [open, user, fetchNotifications]);
 
   const handleTap = async (n: Notification) => {
+    if (!user) return;
     if (!n.read) {
-      await supabase.from("notifications").update({ read: true }).eq("id", n.id);
+      setNotifications((prev) => prev.map((item) => (item.id === n.id ? { ...item, read: true } : item)));
+    }
+    if (!n.read) {
+      const result = await markNotificationRead(user.id, n.id);
+      if (result.error) {
+        setNotifications((prev) => prev.map((item) => (item.id === n.id ? { ...item, read: false } : item)));
+        toast({ title: "Could not mark as read", variant: "destructive" });
+      }
     }
     onClose();
     if (n.type === "follow" && n.reference_id) {
@@ -45,6 +69,27 @@ export default function NotificationsDrawer({ open, onClose }: { open: boolean; 
       return;
     }
     if (n.reference_id) navigate(`/clip/${n.reference_id}`);
+  };
+
+  const markAllRead = async () => {
+    if (!user) return;
+    const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
+    if (unreadIds.length === 0) return;
+
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    const result = await markAllNotificationsRead(user.id);
+    if (result.error) {
+      setNotifications((prev) =>
+        prev.map((n) => ({ ...n, read: unreadIds.includes(n.id) ? false : n.read }))
+      );
+      toast({ title: "Could not mark all as read", variant: "destructive" });
+    }
+  };
+
+  const refreshNow = async () => {
+    setRefreshing(true);
+    await fetchNotifications({ silent: true });
+    setRefreshing(false);
   };
 
   const icon = (type: string) => {
@@ -71,11 +116,26 @@ export default function NotificationsDrawer({ open, onClose }: { open: boolean; 
     <div className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-sm animate-fade-in">
       <div className="flex items-center justify-between px-4 py-4 border-b border-border">
         <h2 className="text-lg font-black text-foreground">Notifications</h2>
-        <button onClick={onClose} className="p-2 rounded-full bg-secondary border border-border">
-          <X className="w-5 h-5 text-foreground" />
-        </button>
+        <div className="flex items-center gap-2">
+          {notifications.some((n) => !n.read) && (
+            <button onClick={() => void markAllRead()} className="text-xs text-electric font-semibold hover:underline">
+              Mark all read
+            </button>
+          )}
+          <button onClick={() => void refreshNow()} className="p-2 rounded-full bg-secondary border border-border" aria-label="Refresh notifications">
+            <RefreshCw className={`w-4 h-4 text-foreground ${refreshing ? "animate-spin" : ""}`} />
+          </button>
+          <button onClick={onClose} className="p-2 rounded-full bg-secondary border border-border">
+            <X className="w-5 h-5 text-foreground" />
+          </button>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto">
+        {loading && notifications.length === 0 && (
+          <div className="flex justify-center py-12">
+            <div className="w-8 h-8 border-2 border-electric/30 border-t-electric rounded-full animate-spin" />
+          </div>
+        )}
         {notifications.length === 0 && (
           <p className="text-center text-muted-foreground text-sm py-12">No notifications yet 🔔</p>
         )}

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { User, Settings, LogOut, Edit3, Trophy, Film, Heart, Zap, ChevronRight, Sparkles, MapPin, Building2, Pin, PinOff, Play } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { User, Settings, LogOut, Edit3, Trophy, Film, Heart, Zap, Sparkles, MapPin, Building2, Pin, PinOff, Play, Bell, Lock, KeyRound, Shield, Smartphone, Camera, Loader2, Mic, Trash2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,11 @@ import { useToast } from "@/hooks/use-toast";
 import { profileSchema } from "@/lib/validation";
 import { mergeFeedPreferences, saveProfileFeedPreferences } from "@/lib/feedPreferences";
 import { Switch } from "@/components/ui/switch";
+import { CHANNELS, loadFollowedChannels, saveFollowedChannels } from "@/lib/channels";
+import { sanitizeSearchTerm } from "@/lib/sanitize";
+import { updateProfileByUserId } from "@/services/profilesService";
+import { deleteMyCommentary, listCommentaryByCreator } from "@/services/clipCommentaryService";
+import type { CommentaryListItem } from "@/lib/clipCommentary/types";
 
 interface FriendProfile {
   user_id: string;
@@ -32,6 +37,14 @@ const TIER_CONFIG = [
 ];
 
 const SPORT_OPTIONS = ["Football", "Basketball", "Baseball", "Soccer", "Tennis", "Hockey", "Cricket", "MMA"];
+const PROFILE_APP_SETTINGS_KEY = "fanclips_profile_app_settings";
+const DEFAULT_APP_SETTINGS = {
+  pushNotificationsEnabled: true,
+  autoplayInFeed: true,
+  highlightFollowersOnly: false,
+  hideAccountFromSearch: false,
+  compactMode: false,
+};
 
 export default function ProfilePage() {
   const { user, profile, signOut, refreshProfile } = useAuth();
@@ -50,6 +63,7 @@ export default function ProfilePage() {
   const [preferredSports, setPreferredSports] = useState<string[]>(profile?.preferred_sports ?? []);
   const [preferredTeams, setPreferredTeams] = useState<string[]>(profile?.preferred_teams ?? []);
   const [preferredLocations, setPreferredLocations] = useState<string[]>(profile?.preferred_locations ?? []);
+  const [followedChannelIds, setFollowedChannelIds] = useState<string[]>([]);
   const [sportInput, setSportInput] = useState("");
   const [teamInput, setTeamInput] = useState("");
   const [locationInput, setLocationInput] = useState("");
@@ -59,12 +73,19 @@ export default function ProfilePage() {
   const [friends, setFriends] = useState<FriendProfile[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<FriendRequest[]>([]);
   const [friendships, setFriendships] = useState<FriendRequest[]>([]);
-  const [mediaTab, setMediaTab] = useState<"clips" | "reposts">("clips");
+  const [mediaTab, setMediaTab] = useState<"clips" | "reposts" | "reactions">("clips");
   const [myClips, setMyClips] = useState<Array<{ id: string; title: string; ai_title: string | null; thumbnail_url: string | null }>>([]);
   const [myReposts, setMyReposts] = useState<Array<{ id: string; title: string; ai_title: string | null; thumbnail_url: string | null }>>([]);
+  const [myReactions, setMyReactions] = useState<CommentaryListItem[]>([]);
+  const [deletingReactionId, setDeletingReactionId] = useState<string | null>(null);
   const [pinnedClipId, setPinnedClipId] = useState<string | null>(null);
   const [pinnedClip, setPinnedClip] = useState<{ id: string; title: string; ai_title: string | null; caption: string | null; video_url: string | null; thumbnail_url: string | null } | null>(null);
   const [pinning, setPinning] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
+  const [appSettings, setAppSettings] = useState(DEFAULT_APP_SETTINGS);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (user) {
@@ -79,11 +100,12 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!user) return;
     const loadMedia = async () => {
-      let { data: profileRow, error: profileErr } = await supabase
+      const { data: profileRowData, error: profileErr } = await supabase
         .from("profiles")
         .select("pinned_clip_id")
         .eq("user_id", user.id)
         .maybeSingle();
+      let profileRow = profileRowData;
       if (profileErr && profileErr.message.toLowerCase().includes("pinned_clip_id")) {
         const fallback = await supabase
           .from("profiles")
@@ -114,21 +136,43 @@ export default function ProfilePage() {
         .limit(36);
 
       const repostClipIds = (repostRows ?? []).map((r) => r.clip_id);
+      type RepostClipRow = {
+        id: string;
+        title: string;
+        ai_title: string | null;
+        caption: string | null;
+        video_url: string | null;
+        thumbnail_url: string | null;
+        status: string;
+        is_hidden: boolean;
+      };
+      let repostClips: RepostClipRow[] | null = null;
+
       if (repostClipIds.length === 0) {
         setMyReposts([]);
-        return;
+      } else {
+        const { data: rc } = await supabase
+          .from("clips")
+          .select("id, title, ai_title, caption, video_url, thumbnail_url, status, is_hidden")
+          .in("id", repostClipIds);
+        repostClips = (rc ?? []) as RepostClipRow[];
+        const ordered = repostClipIds
+          .map((cid) => repostClips!.find((c) => c.id === cid))
+          .filter((c): c is RepostClipRow => Boolean(c))
+          .filter((c) => c.status === "live" && !c.is_hidden)
+          .map((c) => ({ id: c.id, title: c.title, ai_title: c.ai_title, thumbnail_url: c.thumbnail_url }));
+        setMyReposts(ordered);
       }
-      const { data: repostClips } = await supabase
-        .from("clips")
-        .select("id, title, ai_title, caption, video_url, thumbnail_url, status, is_hidden")
-        .in("id", repostClipIds);
 
-      const ordered = repostClipIds
-        .map((id) => (repostClips ?? []).find((c) => c.id === id))
-        .filter((c): c is { id: string; title: string; ai_title: string | null; caption: string | null; video_url: string | null; thumbnail_url: string | null; status: string; is_hidden: boolean } => Boolean(c))
-        .filter((c) => c.status === "live" && !c.is_hidden)
-        .map((c) => ({ id: c.id, title: c.title, ai_title: c.ai_title, thumbnail_url: c.thumbnail_url }));
-      setMyReposts(ordered);
+      const commentaryRes = await listCommentaryByCreator(user.id);
+      if (!commentaryRes.error && commentaryRes.data) {
+        const visible = commentaryRes.data.filter(
+          (item) => item.clip && item.clip.status === "live" && !item.clip.is_hidden,
+        );
+        setMyReactions(visible);
+      } else {
+        setMyReactions([]);
+      }
 
       if (pinnedId) {
         const pinned = clipRows.find((c) => c.id === pinnedId) || (repostClips ?? []).find((c) => c.id === pinnedId);
@@ -162,7 +206,56 @@ export default function ProfilePage() {
     setPreferredSports(m.preferred_sports);
     setPreferredTeams(m.preferred_teams);
     setPreferredLocations(m.preferred_locations);
+    setFollowedChannelIds(loadFollowedChannels(user.id));
   }, [user, profile]);
+
+  useEffect(() => {
+    return () => {
+      if (avatarPreviewUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(avatarPreviewUrl);
+      }
+    };
+  }, [avatarPreviewUrl]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PROFILE_APP_SETTINGS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<typeof DEFAULT_APP_SETTINGS>;
+      setAppSettings((prev) => ({
+        ...prev,
+        pushNotificationsEnabled:
+          typeof parsed.pushNotificationsEnabled === "boolean"
+            ? parsed.pushNotificationsEnabled
+            : prev.pushNotificationsEnabled,
+        autoplayInFeed:
+          typeof parsed.autoplayInFeed === "boolean" ? parsed.autoplayInFeed : prev.autoplayInFeed,
+        highlightFollowersOnly:
+          typeof parsed.highlightFollowersOnly === "boolean" ? parsed.highlightFollowersOnly : prev.highlightFollowersOnly,
+        hideAccountFromSearch:
+          typeof parsed.hideAccountFromSearch === "boolean" ? parsed.hideAccountFromSearch : prev.hideAccountFromSearch,
+        compactMode: typeof parsed.compactMode === "boolean" ? parsed.compactMode : prev.compactMode,
+      }));
+    } catch {
+      // Ignore malformed local settings and keep defaults.
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(PROFILE_APP_SETTINGS_KEY, JSON.stringify(appSettings));
+  }, [appSettings]);
+
+  useEffect(() => {
+    const loadRole = async () => {
+      if (!user) {
+        setIsAdmin(false);
+        return;
+      }
+      const { data: hasRoleData } = await supabase.rpc("has_role", { _user_id: user.id, _role: "admin" });
+      setIsAdmin(Boolean(hasRoleData));
+    };
+    void loadRole();
+  }, [user]);
 
   const loadFriendData = useCallback(async () => {
     if (!user) return;
@@ -238,19 +331,16 @@ export default function ProfilePage() {
     }
 
     setSaving(true);
-    const { error } = await supabase
-      .from("profiles")
-      .update({
-        username: result.data.username,
-        team: result.data.team || null,
-        section: result.data.section || null,
-        bio: result.data.bio || null,
-        is_private: isPrivate,
-      })
-      .eq("user_id", user.id);
+    const saveResult = await updateProfileByUserId(user.id, {
+      username: result.data.username,
+      team: result.data.team || null,
+      section: result.data.section || null,
+      bio: result.data.bio || null,
+      is_private: isPrivate,
+    });
 
-    if (error) {
-      toast({ title: "Failed to save", description: error.message, variant: "destructive" });
+    if (saveResult.error) {
+      toast({ title: "Failed to save", description: saveResult.error, variant: "destructive" });
     } else {
       toast({ title: "Profile updated! ✅" });
       await refreshProfile();
@@ -264,16 +354,87 @@ export default function ProfilePage() {
     navigate("/");
   };
 
+  const handleAvatarClick = () => {
+    if (!avatarUploading) {
+      fileInputRef.current?.click();
+    }
+  };
+
+  const handleAvatarFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !user) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Invalid file", description: "Please select an image.", variant: "destructive" });
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ title: "Image too large", description: "Max avatar size is 5MB.", variant: "destructive" });
+      return;
+    }
+
+    const tempPreview = URL.createObjectURL(file);
+    setAvatarPreviewUrl(tempPreview);
+    setAvatarUploading(true);
+
+    try {
+      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+      const path = `${user.id}/avatar-${Date.now()}.${ext}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(path, file, {
+          upsert: true,
+          contentType: file.type,
+        });
+      if (uploadError) throw uploadError;
+
+      const { data: publicUrlData } = supabase.storage.from("avatars").getPublicUrl(path);
+      const publicUrl = publicUrlData.publicUrl;
+
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({ avatar_url: publicUrl })
+        .eq("user_id", user.id);
+      if (updateError) throw updateError;
+
+      setAvatarPreviewUrl(`${publicUrl}?t=${Date.now()}`);
+      await refreshProfile();
+      toast({ title: "Profile photo updated" });
+    } catch (err) {
+      console.error("Avatar upload failed:", err);
+      setAvatarPreviewUrl(null);
+      toast({
+        title: "Could not update profile photo",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setAvatarUploading(false);
+      if (tempPreview.startsWith("blob:")) {
+        URL.revokeObjectURL(tempPreview);
+      }
+    }
+  };
+
+  const updateAppSetting = (key: keyof typeof DEFAULT_APP_SETTINGS, value: boolean, toastMessage: string) => {
+    setAppSettings((prev) => ({ ...prev, [key]: value }));
+    toast({ title: toastMessage });
+  };
+
   const searchPeople = async (query: string) => {
-    setFriendQuery(query);
-    if (!user || query.trim().length < 2) {
+    const sanitized = sanitizeSearchTerm(query, 40);
+    setFriendQuery(sanitized);
+    if (!user || sanitized.length < 2 || appSettings.hideAccountFromSearch) {
       setSearchResults([]);
       return;
     }
     const { data } = await supabase
       .from("profiles")
       .select("user_id, username, avatar_url")
-      .ilike("username", `%${query.trim()}%`)
+      .ilike("username", `%${sanitized}%`)
       .neq("user_id", user.id)
       .limit(8);
     setSearchResults((data as FriendProfile[] | null) ?? []);
@@ -337,12 +498,19 @@ export default function ProfilePage() {
     ? user.email.replace(/(^.).*(@.*$)/, (_m, a, b) => `${a}••••••${b}`)
     : "";
 
+  const currentAvatarUrl = avatarPreviewUrl ?? profile.avatar_url ?? undefined;
+
   const savePreferences = async () => {
     if (!user) return;
     setPrefSaving(true);
+    saveFollowedChannels(user.id, followedChannelIds);
+    const followedChannelLabels = CHANNELS
+      .filter((channel) => followedChannelIds.includes(channel.id))
+      .map((channel) => channel.label);
+    const mergedTeams = Array.from(new Set([...preferredTeams, ...followedChannelLabels]));
     const prefs = {
       preferred_sports: preferredSports,
-      preferred_teams: preferredTeams,
+      preferred_teams: mergedTeams,
       preferred_locations: preferredLocations,
     };
     const { savedToDb, partial } = await saveProfileFeedPreferences(supabase, user.id, prefs);
@@ -428,6 +596,19 @@ export default function ProfilePage() {
     }
   };
 
+  const handleDeleteReaction = async (featureId: string) => {
+    if (!user) return;
+    setDeletingReactionId(featureId);
+    const res = await deleteMyCommentary(featureId, user.id);
+    setDeletingReactionId(null);
+    if (res.error) {
+      toast({ title: "Could not delete reaction", description: res.error, variant: "destructive" });
+      return;
+    }
+    setMyReactions((prev) => prev.filter((x) => x.feature.id !== featureId));
+    toast({ title: "Reaction removed" });
+  };
+
   return (
     <div className="h-full overflow-y-scroll scrollbar-hide">
       <div className="mx-auto w-full max-w-3xl px-4 md:px-6 py-5 md:py-7">
@@ -437,15 +618,42 @@ export default function ProfilePage() {
       </div>
 
       {/* Profile card */}
-      <div className="my-4 rounded-3xl p-5 md:p-6 shadow-card bg-gradient-to-br from-card via-card/95 to-secondary/50">
+      <div className="my-4 rounded-3xl p-5 md:p-6 shadow-card bg-gradient-to-br from-card via-card/95 to-secondary/50 border border-border/40">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={handleAvatarFileChange}
+        />
         <div className="flex items-center gap-4 mb-4">
           <div className="relative">
-            <Avatar className="w-20 h-20 border-2 border-electric/40">
-              <AvatarImage src={profile.avatar_url ?? undefined} />
+            <button
+              type="button"
+              onClick={handleAvatarClick}
+              disabled={avatarUploading}
+              className="relative rounded-full group"
+              aria-label="Change profile picture"
+            >
+            <Avatar className="w-20 h-20 border-2 border-electric/50 ring-4 ring-electric/10">
+              <AvatarImage src={currentAvatarUrl} />
               <AvatarFallback className="bg-electric/20 text-electric text-2xl font-black">
                 {profile.username[0]?.toUpperCase() ?? "F"}
               </AvatarFallback>
             </Avatar>
+            <div className="absolute inset-0 rounded-full bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center">
+              {avatarUploading ? (
+                <Loader2 className="w-5 h-5 text-white animate-spin" />
+              ) : (
+                <Camera className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+              )}
+            </div>
+            {!avatarUploading && (
+              <span className="absolute -bottom-1 -left-1 w-6 h-6 rounded-full bg-background border border-border flex items-center justify-center">
+                <Camera className="w-3.5 h-3.5 text-electric" />
+              </span>
+            )}
+            </button>
             <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full gradient-electric flex items-center justify-center text-xs">
               {tier.icon}
             </div>
@@ -460,6 +668,7 @@ export default function ProfilePage() {
             <div className="flex items-center gap-1 mt-1">
               <span className="text-sm font-bold text-electric">{tier.icon} {tier.name}</span>
             </div>
+            <p className="text-[11px] text-muted-foreground mt-1">Tap profile photo to change picture</p>
           </div>
           <button
             onClick={() => {
@@ -679,6 +888,40 @@ export default function ProfilePage() {
 
           <div className="rounded-2xl bg-background/40 border border-border/40 p-3 space-y-2">
             <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <Sparkles className="w-3.5 h-3.5" />
+              Follow channels (teams & leagues)
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Follow channels to prioritize matching clips in your feed.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {CHANNELS.map((channel) => {
+                const selected = followedChannelIds.includes(channel.id);
+                return (
+                  <button
+                    key={channel.id}
+                    type="button"
+                    onClick={() =>
+                      setFollowedChannelIds((prev) =>
+                        selected ? prev.filter((id) => id !== channel.id) : [...prev, channel.id]
+                      )
+                    }
+                    className={`text-[11px] px-2.5 py-1.5 rounded-full border transition-colors ${
+                      selected
+                        ? "bg-electric/15 border-electric/50 text-electric"
+                        : "bg-background/50 border-border/60 text-foreground/90 hover:border-border"
+                    }`}
+                  >
+                    {channel.type === "league" ? "League: " : "Team: "}
+                    {channel.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-background/40 border border-border/40 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               <MapPin className="w-3.5 h-3.5" />
               Places
             </div>
@@ -726,8 +969,14 @@ export default function ProfilePage() {
             value={friendQuery}
             onChange={(e) => searchPeople(e.target.value)}
             placeholder="Search by username"
+            disabled={appSettings.hideAccountFromSearch}
             className="bg-background/60 border-border/70 h-11 text-foreground text-sm"
           />
+          {appSettings.hideAccountFromSearch && (
+            <p className="text-xs text-muted-foreground">
+              People search suggestions are currently hidden in Settings.
+            </p>
+          )}
         </div>
         {searchResults.length > 0 && (
           <div className="space-y-2">
@@ -807,58 +1056,259 @@ export default function ProfilePage() {
           >
             Reposts ({myReposts.length})
           </button>
+          <button
+            type="button"
+            onClick={() => setMediaTab("reactions")}
+            className={`h-8 px-3 rounded-full text-xs border ${mediaTab === "reactions" ? "bg-electric/20 border-electric/50 text-electric" : "bg-background/60 border-border text-muted-foreground"}`}
+          >
+            Reactions ({myReactions.length})
+          </button>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
-          {(mediaTab === "clips" ? myClips : myReposts).map((clip) => (
-            <div key={clip.id} className="rounded-xl overflow-hidden bg-background/60 border border-border/40">
-              <button type="button" onClick={() => navigate(`/clip/${clip.id}`)} className="w-full text-left">
-              <div className="aspect-video bg-secondary flex items-center justify-center overflow-hidden">
-                {clip.thumbnail_url ? (
-                  <img src={clip.thumbnail_url} alt={clip.title} className="w-full h-full object-cover" />
-                ) : (
-                  <Film className="w-5 h-5 text-muted-foreground" />
-                )}
+        {mediaTab === "reactions" ? (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
+            {myReactions.map((item) => {
+              const thumb = item.clip?.thumbnail_url;
+              const label = item.feature.title?.trim() || item.clip?.ai_title || item.clip?.title || "Reaction";
+              return (
+                <div key={item.feature.id} className="rounded-xl overflow-hidden bg-background/60 border border-border/40">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/clip/${item.feature.source_clip_id}?reaction=${item.feature.id}`)}
+                    className="w-full text-left relative"
+                  >
+                    <div className="aspect-video bg-secondary flex items-center justify-center overflow-hidden">
+                      {thumb ? (
+                        <img src={thumb} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <Film className="w-5 h-5 text-muted-foreground" />
+                      )}
+                      <span className="absolute bottom-2 right-2 flex items-center gap-1 rounded-full bg-black/70 text-white text-[10px] px-2 py-0.5 font-semibold">
+                        <Mic className="w-3 h-3" />
+                        {item.feature.duration_seconds > 0 ? `${Math.round(item.feature.duration_seconds)}s` : ""}
+                      </span>
+                    </div>
+                    <div className="p-2">
+                      <p className="text-[11px] font-semibold line-clamp-2 text-foreground">{label}</p>
+                    </div>
+                  </button>
+                  <div className="px-2 pb-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 w-full text-[11px] text-destructive border-destructive/40 hover:bg-destructive/10"
+                      disabled={deletingReactionId === item.feature.id}
+                      onClick={() => void handleDeleteReaction(item.feature.id)}
+                    >
+                      <Trash2 className="w-3 h-3 mr-1" />
+                      {deletingReactionId === item.feature.id ? "…" : "Delete"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
+            {(mediaTab === "clips" ? myClips : myReposts).map((clip) => (
+              <div key={clip.id} className="rounded-xl overflow-hidden bg-background/60 border border-border/40">
+                <button type="button" onClick={() => navigate(`/clip/${clip.id}`)} className="w-full text-left">
+                  <div className="aspect-video bg-secondary flex items-center justify-center overflow-hidden">
+                    {clip.thumbnail_url ? (
+                      <img src={clip.thumbnail_url} alt={clip.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <Film className="w-5 h-5 text-muted-foreground" />
+                    )}
+                  </div>
+                  <div className="p-2">
+                    <p className="text-[11px] font-semibold line-clamp-2 text-foreground">{clip.ai_title || clip.title}</p>
+                  </div>
+                </button>
+                <div className="px-2 pb-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={pinning}
+                    variant={pinnedClipId === clip.id ? "secondary" : "outline"}
+                    className="h-7 w-full text-[11px]"
+                    onClick={() => void handlePinClip(clip.id)}
+                  >
+                    <Pin className="w-3 h-3 mr-1" />
+                    {pinnedClipId === clip.id ? "Pinned" : "Pin highlight"}
+                  </Button>
+                </div>
               </div>
-              <div className="p-2">
-                <p className="text-[11px] font-semibold line-clamp-2 text-foreground">{clip.ai_title || clip.title}</p>
-              </div>
-              </button>
-              <div className="px-2 pb-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={pinning}
-                  variant={pinnedClipId === clip.id ? "secondary" : "outline"}
-                  className="h-7 w-full text-[11px]"
-                  onClick={() => void handlePinClip(clip.id)}
-                >
-                  <Pin className="w-3 h-3 mr-1" />
-                  {pinnedClipId === clip.id ? "Pinned" : "Pin highlight"}
-                </Button>
-              </div>
-            </div>
-          ))}
-        </div>
-        {(mediaTab === "clips" ? myClips.length === 0 : myReposts.length === 0) && (
+            ))}
+          </div>
+        )}
+        {((mediaTab === "clips" && myClips.length === 0) ||
+          (mediaTab === "reposts" && myReposts.length === 0) ||
+          (mediaTab === "reactions" && myReactions.length === 0)) && (
           <p className="text-xs text-muted-foreground text-center py-3">
-            {mediaTab === "clips" ? "No clips yet." : "No reposts yet."}
+            {mediaTab === "clips" ? "No clips yet." : mediaTab === "reposts" ? "No reposts yet." : "No live reactions yet. Open someone else’s clip and tap Record live reaction."}
           </p>
         )}
       </div>
 
       {/* Settings */}
-      <div className="mb-4 rounded-3xl overflow-hidden shadow-card bg-card/80">
-        {[
-          { icon: Settings, label: "Notifications", action: () => {} },
-          { icon: Trophy, label: "Tier Progress", action: () => {} },
-        ].map(({ icon: Icon, label, action }) => (
-          <button key={label} onClick={action}
-            className="w-full flex items-center gap-3 px-4 py-4 text-left hover:bg-background/40 transition-colors border-b border-border/60 last:border-0">
-            <Icon className="w-5 h-5 text-muted-foreground" />
-            <span className="flex-1 text-sm font-medium text-foreground">{label}</span>
-            <ChevronRight className="w-4 h-4 text-muted-foreground" />
-          </button>
-        ))}
+      <div className="mb-4 rounded-3xl overflow-hidden shadow-card bg-card/80 border border-border/50">
+        <div className="px-4 py-3 border-b border-border/60">
+          <p className="text-sm font-bold text-foreground flex items-center gap-2">
+            <Settings className="w-4 h-4 text-electric" />
+            Settings
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">Privacy, notifications, and account safety controls.</p>
+        </div>
+
+        <div className="px-4 py-3 border-b border-border/60 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Bell className="w-4 h-4 text-muted-foreground" />
+                Notifications
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Receive push notifications when interactions happen.
+              </p>
+            </div>
+            <Switch
+              checked={appSettings.pushNotificationsEnabled}
+              onCheckedChange={(checked) =>
+                updateAppSetting(
+                  "pushNotificationsEnabled",
+                  checked,
+                  checked ? "Push notifications enabled" : "Push notifications disabled"
+                )
+              }
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-muted-foreground" />
+                Compact mobile layout
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Tighter spacing for one-hand scrolling on smaller screens.
+              </p>
+            </div>
+            <Switch
+              checked={appSettings.compactMode}
+              onCheckedChange={(checked) =>
+                updateAppSetting("compactMode", checked, checked ? "Compact mode enabled" : "Compact mode disabled")
+              }
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Play className="w-4 h-4 text-muted-foreground" />
+                Feed autoplay
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Auto-play videos while scrolling through the feed.
+              </p>
+            </div>
+            <Switch
+              checked={appSettings.autoplayInFeed}
+              onCheckedChange={(checked) =>
+                updateAppSetting("autoplayInFeed", checked, checked ? "Feed autoplay enabled" : "Feed autoplay disabled")
+              }
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Shield className="w-4 h-4 text-muted-foreground" />
+                Followers-only highlights
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Make your future highlights visible to followers only.
+              </p>
+            </div>
+            <Switch
+              checked={appSettings.highlightFollowersOnly}
+              onCheckedChange={(checked) =>
+                updateAppSetting(
+                  "highlightFollowersOnly",
+                  checked,
+                  checked ? "Followers-only highlights enabled" : "Highlights are public by default"
+                )
+              }
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Lock className="w-4 h-4 text-muted-foreground" />
+                Hide people search suggestions
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Disable username suggestion cards while searching for friends on this device.
+              </p>
+            </div>
+            <Switch
+              checked={appSettings.hideAccountFromSearch}
+              onCheckedChange={(checked) =>
+                updateAppSetting(
+                  "hideAccountFromSearch",
+                  checked,
+                  checked ? "Search suggestions hidden" : "Search suggestions visible"
+                )
+              }
+            />
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-b border-border/60">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => navigate("/auth?mode=forgot")}
+            className="w-full h-11 border-border text-foreground justify-start"
+          >
+            <KeyRound className="w-4 h-4 mr-2 text-muted-foreground" />
+            Change password
+          </Button>
+        </div>
+
+        <div className="px-4 py-3 border-b border-border/60">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => navigate("/about")}
+            className="w-full h-11 border-border text-foreground justify-start"
+          >
+            <Shield className="w-4 h-4 mr-2 text-muted-foreground" />
+            About, safety and legal
+          </Button>
+        </div>
+
+        {isAdmin && (
+          <div className="px-4 py-3 border-b border-border/60">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => navigate("/admin")}
+              className="w-full h-11 border-border text-foreground justify-start"
+            >
+              <Shield className="w-4 h-4 mr-2 text-muted-foreground" />
+              Open admin dashboard
+            </Button>
+          </div>
+        )}
+
+        <div className="px-4 py-3">
+          <div className="rounded-2xl bg-background/60 border border-border/60 p-3">
+            <p className="text-xs text-muted-foreground">
+              Security note: app settings here are saved on this device. Profile privacy fields are saved to your account and sync across devices.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Sign out */}

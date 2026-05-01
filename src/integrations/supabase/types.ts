@@ -14,6 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
+      admin_profiles: {
+        Row: {
+          admin_name: string
+          created_at: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          admin_name: string
+          created_at?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          admin_name?: string
+          created_at?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      admin_settings: {
+        Row: {
+          admin_email: string
+          created_at: string
+          id: number
+          setup_completed: boolean
+          updated_at: string
+        }
+        Insert: {
+          admin_email?: string
+          created_at?: string
+          id?: number
+          setup_completed?: boolean
+          updated_at?: string
+        }
+        Update: {
+          admin_email?: string
+          created_at?: string
+          id?: number
+          setup_completed?: boolean
+          updated_at?: string
+        }
+        Relationships: []
+      }
       clip_likes: {
         Row: {
           clip_id: string
@@ -66,6 +111,44 @@ export type Database = {
           {
             foreignKeyName: "clip_reposts_clip_id_fkey"
             columns: ["clip_id"]
+            isOneToOne: false
+            referencedRelation: "clips"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      clip_commentary_features: {
+        Row: {
+          id: string
+          source_clip_id: string
+          creator_user_id: string
+          audio_storage_path: string
+          duration_seconds: number
+          title: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          source_clip_id: string
+          creator_user_id: string
+          audio_storage_path: string
+          duration_seconds?: number
+          title?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          source_clip_id?: string
+          creator_user_id?: string
+          audio_storage_path?: string
+          duration_seconds?: number
+          title?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clip_commentary_features_source_clip_id_fkey"
+            columns: ["source_clip_id"]
             isOneToOne: false
             referencedRelation: "clips"
             referencedColumns: ["id"]
@@ -407,6 +490,36 @@ export type Database = {
         }
         Relationships: []
       }
+      reward_rules: {
+        Row: {
+          created_at: string
+          description: string | null
+          enabled: boolean
+          key: string
+          label: string
+          points_value: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          enabled?: boolean
+          key: string
+          label: string
+          points_value?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          enabled?: boolean
+          key?: string
+          label?: string
+          points_value?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string
@@ -430,8 +543,47 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      admin_create_reward: {
+        Args: {
+          p_active: boolean
+          p_category: string
+          p_description?: string
+          p_name: string
+          p_points_cost: number
+        }
+        Returns: Json
+      }
+      admin_update_reward: {
+        Args: {
+          p_active: boolean
+          p_category: string
+          p_description?: string
+          p_id: string
+          p_name: string
+          p_points_cost: number
+        }
+        Returns: Json
+      }
+      admin_update_reward_rule: {
+        Args: {
+          p_description?: string
+          p_enabled: boolean
+          p_key: string
+          p_label: string
+          p_points_value: number
+        }
+        Returns: Json
+      }
       claim_clip_upload_points: {
         Args: { p_clip_id: string }
+        Returns: Json
+      }
+      get_admin_rewards_overview: {
+        Args: Record<PropertyKey, never>
+        Returns: Json
+      }
+      get_my_rewards_overview: {
+        Args: Record<PropertyKey, never>
         Returns: Json
       }
       has_role: {
@@ -444,6 +596,14 @@ export type Database = {
       increment_points: {
         Args: { p_amount: number; p_user_id: string }
         Returns: undefined
+      }
+      initialize_admin_profile: {
+        Args: { p_admin_name: string }
+        Returns: Json
+      }
+      reward_rule_points: {
+        Args: { p_key: string }
+        Returns: number
       }
       toggle_clip_like: {
         Args: { p_clip_id: string; p_user_id: string }
@@ -460,6 +620,10 @@ export type Database = {
       }
       repost_clip: {
         Args: { p_clip_id: string }
+        Returns: Json
+      }
+      redeem_reward_atomic: {
+        Args: { p_reward_id: string }
         Returns: Json
       }
       follow_user: {

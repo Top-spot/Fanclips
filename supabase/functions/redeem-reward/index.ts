@@ -1,21 +1,63 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
-};
+const corsAllowHeaders =
+  "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version";
+
+/** When REDEEM_REWARD_ALLOWED_ORIGINS is set (comma-separated), reflect a matching Origin; otherwise use *. */
+function corsHeadersFor(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin");
+  const raw = Deno.env.get("REDEEM_REWARD_ALLOWED_ORIGINS");
+  if (!raw?.trim()) {
+    return {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": corsAllowHeaders,
+    };
+  }
+  const allowed = new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+  if (allowed.has("*")) {
+    return {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": corsAllowHeaders,
+    };
+  }
+  if (origin && allowed.has(origin)) {
+    return {
+      "Access-Control-Allow-Origin": origin,
+      Vary: "Origin",
+      "Access-Control-Allow-Headers": corsAllowHeaders,
+    };
+  }
+  return {
+    "Access-Control-Allow-Headers": corsAllowHeaders,
+  };
+}
 
 Deno.serve(async (req) => {
+  const corsHeaders = corsHeadersFor(req);
   if (req.method === "OPTIONS") {
+    if (!corsHeaders["Access-Control-Allow-Origin"]) {
+      return new Response(null, { status: 403 });
+    }
     return new Response(null, { headers: corsHeaders });
   }
 
+  if (!corsHeaders["Access-Control-Allow-Origin"]) {
+    return new Response(JSON.stringify({ error: "Forbidden" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Headers": corsAllowHeaders },
+    });
+  }
+
   try {
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("redeem-reward: missing SUPABASE_URL or SUPABASE_ANON_KEY");
+      return new Response(JSON.stringify({ error: "Server misconfiguration" }), {
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
@@ -24,9 +66,12 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser(
-      authHeader.replace("Bearer ", "")
-    );
+    // User-scoped client so Postgres `auth.uid()` inside SECURITY DEFINER RPCs matches the caller.
+    const supabaseUser = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+
+    const { data: { user }, error: authError } = await supabaseUser.auth.getUser();
     if (authError || !user) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -49,74 +94,42 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Fetch reward
-    const { data: reward, error: rewardError } = await supabase
-      .from("rewards")
-      .select("*")
-      .eq("id", reward_id)
-      .eq("active", true)
-      .single();
-
-    if (rewardError || !reward) {
-      return new Response(JSON.stringify({ error: "Reward not found or inactive" }), {
-        status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" }
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRe.test(reward_id)) {
+      return new Response(JSON.stringify({ error: "reward_id must be a UUID" }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Check user's points
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("points_balance")
-      .eq("user_id", user.id)
-      .single();
+    const { data: redeemData, error: redeemError } = await supabaseUser.rpc("redeem_reward_atomic", {
+      p_reward_id: reward_id,
+    });
 
-    if (profileError || !profile) {
-      return new Response(JSON.stringify({ error: "Profile not found" }), {
-        status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
+    if (redeemError) {
+      const message = redeemError.message || "Failed to redeem reward";
+      const status =
+        message.includes("not found")
+          ? 404
+          : message.includes("Insufficient points")
+            ? 400
+            : message.includes("Profile not found")
+              ? 404
+              : message.includes("Unauthorized")
+                ? 401
+                : 500;
 
-    if (profile.points_balance < reward.points_cost) {
       return new Response(
-        JSON.stringify({ error: "Insufficient points", balance: profile.points_balance, cost: reward.points_cost }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: message,
+        }),
+        { status, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // Create redemption
-    const { error: redemptionError } = await supabase
-      .from("reward_redemptions")
-      .insert({
-        user_id: user.id,
-        reward_id: reward.id,
-        points_spent: reward.points_cost,
-      });
-
-    if (redemptionError) {
-      return new Response(JSON.stringify({ error: "Failed to redeem reward" }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
-
-    // Deduct points
-    const newBalance = profile.points_balance - reward.points_cost;
-    await supabase
-      .from("profiles")
-      .update({ points_balance: newBalance })
-      .eq("user_id", user.id);
-
-    // Log transaction
-    await supabase.from("points_transactions").insert({
-      user_id: user.id,
-      amount: -reward.points_cost,
-      reason: `Redeemed: ${reward.name}`,
-      reference_id: reward.id,
+    return new Response(JSON.stringify(redeemData ?? { success: true }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-
-    return new Response(
-      JSON.stringify({ success: true, new_balance: newBalance, reward_name: reward.name }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
   } catch (err) {
     console.error("redeem-reward error:", err);
     return new Response(JSON.stringify({ error: "Internal server error" }), {

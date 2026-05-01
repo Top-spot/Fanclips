@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Trophy, Zap, Star, Lock, CheckCircle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+import { rewardTransferSchema } from "@/lib/validation";
+import { sanitizeSearchTerm } from "@/lib/sanitize";
 
 interface Reward {
   id: string;
@@ -19,6 +21,29 @@ interface Reward {
 interface UserLite {
   user_id: string;
   username: string;
+}
+
+interface RewardsOverview {
+  balance: number;
+  ledger_total: number;
+  total_earned: number;
+  total_spent: number;
+  transactions_count: number;
+  redemptions_count: number;
+}
+
+interface PointsTransaction {
+  id: string;
+  amount: number;
+  reason: string;
+  created_at: string;
+}
+
+interface RewardRedemption {
+  id: string;
+  points_spent: number;
+  redeemed_at: string;
+  reward_id: string;
 }
 
 const TIER_CONFIG = [
@@ -47,30 +72,107 @@ export default function RewardsPage() {
   const [giftNote, setGiftNote] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const [userResults, setUserResults] = useState<UserLite[]>([]);
+  const [overview, setOverview] = useState<RewardsOverview | null>(null);
+  const [recentTransactions, setRecentTransactions] = useState<PointsTransaction[]>([]);
+  const [recentRedemptions, setRecentRedemptions] = useState<RewardRedemption[]>([]);
+  const [earnRules, setEarnRules] = useState<Record<string, number>>({
+    upload: 50,
+    like_received: 5,
+    comment_posted: 2,
+  });
+
+  const fetchRewards = useCallback(async () => {
+    setLoading(true);
+    const requests = [
+      supabase
+        .from("rewards")
+        .select("*")
+        .eq("active", true)
+        .order("points_cost", { ascending: true }),
+      supabase.from("reward_rules").select("key, points_value, enabled"),
+      user
+        ? supabase.rpc("get_my_rewards_overview")
+        : Promise.resolve({ data: null, error: null }),
+      user
+        ? supabase
+            .from("points_transactions")
+            .select("id, amount, reason, created_at")
+            .order("created_at", { ascending: false })
+            .limit(12)
+        : Promise.resolve({ data: null, error: null }),
+      user
+        ? supabase
+            .from("reward_redemptions")
+            .select("id, points_spent, redeemed_at, reward_id")
+            .order("redeemed_at", { ascending: false })
+            .limit(8)
+        : Promise.resolve({ data: null, error: null }),
+    ] as const;
+
+    const [rewardRes, rulesRes, overviewRes, txRes, redemptionsRes] = await Promise.all(requests);
+    const { data: rewardData, error: rewardError } = rewardRes;
+    const { data: rulesData } = rulesRes;
+
+    if (rewardError) {
+      toast({ title: "Failed to load rewards", description: rewardError.message, variant: "destructive" });
+      setRewards([]);
+    } else {
+      setRewards((rewardData as Reward[]) ?? []);
+    }
+
+    const nextRules: Record<string, number> = {
+      upload: 50,
+      like_received: 5,
+      comment_posted: 2,
+    };
+    (rulesData ?? []).forEach((rule) => {
+      if (rule.enabled) nextRules[rule.key] = rule.points_value;
+    });
+    setEarnRules(nextRules);
+    setOverview((overviewRes.data as RewardsOverview | null) ?? null);
+    setRecentTransactions((txRes.data as PointsTransaction[] | null) ?? []);
+    setRecentRedemptions((redemptionsRes.data as RewardRedemption[] | null) ?? []);
+    setLoading(false);
+  }, [toast, user]);
 
   useEffect(() => {
-    fetchRewards();
-  }, []);
+    void fetchRewards();
+  }, [fetchRewards]);
 
-  const fetchRewards = async () => {
-    const { data } = await supabase
-      .from("rewards")
-      .select("*")
-      .eq("active", true)
-      .order("points_cost", { ascending: true });
-    setRewards((data as Reward[]) ?? []);
-    setLoading(false);
-  };
-
-  const points = profile?.points_balance ?? 0;
+  const points = overview?.balance ?? profile?.points_balance ?? 0;
+  const ledgerMatches = overview ? overview.balance === overview.ledger_total : true;
   const tier = [...TIER_CONFIG].reverse().find((t) => points >= t.min) ?? TIER_CONFIG[0];
   const nextTier = TIER_CONFIG.find((t) => t.min > points);
   const tierProgress = nextTier
     ? ((points - tier.min) / (nextTier.min - tier.min)) * 100
     : 100;
+  const earnCards = useMemo(
+    () => [
+      { icon: "📤", label: `+${earnRules.upload ?? 50} pts`, sub: "per upload" },
+      { icon: "❤️", label: `+${earnRules.like_received ?? 5} pts`, sub: "per like received" },
+      { icon: "💬", label: `+${earnRules.comment_posted ?? 2} pts`, sub: "per comment" },
+      { icon: "🔁", label: `+${earnRules.repost_made ?? 5} pts`, sub: "per repost" },
+    ],
+    [earnRules]
+  );
+  const milestones = useMemo(() => {
+    const postedComments = recentTransactions.filter((tx) => tx.reason === "Comment posted").length;
+    const uploads = recentTransactions.filter((tx) => tx.reason === "Clip uploaded").length;
+    const reposts = recentTransactions.filter((tx) => tx.reason === "Repost bonus").length;
+    return [
+      { label: "First Upload", done: uploads > 0 },
+      { label: "5 Comments Posted", done: postedComments >= 5 },
+      { label: "3 Reposts", done: reposts >= 3 },
+      { label: "1000+ Total Earned", done: (overview?.total_earned ?? 0) >= 1000 },
+    ];
+  }, [overview?.total_earned, recentTransactions]);
 
   const handleRedeem = async (reward: Reward) => {
-    if (!user || !session) { navigate("/auth"); return; }
+    if (!user || !session) {
+      toast({ title: "Sign in required", description: "Sign in to redeem rewards." });
+      navigate("/auth");
+      return;
+    }
     if (points < reward.points_cost) {
       toast({ title: "Not enough points!", description: `You need ${reward.points_cost - points} more points.`, variant: "destructive" });
       return;
@@ -82,8 +184,13 @@ export default function RewardsPage() {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
       if (error || data?.error) throw new Error(data?.error || "Redemption failed");
-      toast({ title: `🎉 ${reward.name} redeemed!`, description: `New balance: ${data.new_balance} pts` });
+      const nextBalance = typeof data?.new_balance === "number" ? data.new_balance : null;
+      toast({
+        title: `🎉 ${reward.name} redeemed!`,
+        description: nextBalance !== null ? `New balance: ${nextBalance} pts` : "Reward redemption completed.",
+      });
       await refreshProfile();
+      await fetchRewards();
     } catch (err: unknown) {
       toast({ title: "Failed to redeem", description: err instanceof Error ? err.message : "Try again", variant: "destructive" });
     } finally {
@@ -92,8 +199,9 @@ export default function RewardsPage() {
   };
 
   const searchUsers = async (query: string) => {
-    setUserSearch(query);
-    if (!user || query.trim().length < 2) {
+    const sanitized = sanitizeSearchTerm(query, 40);
+    setUserSearch(sanitized);
+    if (!user || sanitized.length < 2) {
       setUserResults([]);
       return;
     }
@@ -101,7 +209,7 @@ export default function RewardsPage() {
     const { data } = await supabase
       .from("profiles")
       .select("user_id, username")
-      .ilike("username", `%${query.trim()}%`)
+      .ilike("username", `%${sanitized}%`)
       .neq("user_id", user.id)
       .limit(8);
     setUserResults((data as UserLite[]) ?? []);
@@ -113,11 +221,15 @@ export default function RewardsPage() {
       return;
     }
 
-    const amount = kind === "star" ? 10 : Number(giftAmount);
-    if (!Number.isFinite(amount) || amount < 1) {
-      toast({ title: "Enter a valid amount", variant: "destructive" });
+    const parsedTransfer = rewardTransferSchema.safeParse({
+      amount: kind === "star" ? 10 : Number(giftAmount),
+      note: giftNote,
+    });
+    if (!parsedTransfer.success) {
+      toast({ title: parsedTransfer.error.errors[0]?.message ?? "Enter a valid amount", variant: "destructive" });
       return;
     }
+    const { amount, note } = parsedTransfer.data;
     if (points < amount) {
       toast({ title: "Not enough points", description: `You need ${amount - points} more points.`, variant: "destructive" });
       return;
@@ -128,7 +240,7 @@ export default function RewardsPage() {
       p_to_user_id: toUserId,
       p_amount: amount,
       p_kind: kind,
-      p_message: giftNote || null,
+      p_message: note || null,
     });
     setGiftingTo(null);
 
@@ -196,6 +308,22 @@ export default function RewardsPage() {
               style={{ width: `${Math.min(100, tierProgress)}%` }}
             />
           </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+            <span className={`rounded-full border px-2 py-1 ${ledgerMatches ? "border-green-500/50 text-green-400" : "border-destructive/60 text-destructive"}`}>
+              {ledgerMatches ? "Ledger Synced" : "Ledger Drift"}
+            </span>
+            {overview && (
+              <>
+                <span className="rounded-full border border-border px-2 py-1 text-muted-foreground">
+                  Earned: {overview.total_earned.toLocaleString()}
+                </span>
+                <span className="rounded-full border border-border px-2 py-1 text-muted-foreground">
+                  Spent: {overview.total_spent.toLocaleString()}
+                </span>
+              </>
+            )}
+          </div>
         </div>
       ) : (
         <div className="mx-4 my-4 gradient-card border border-border rounded-2xl p-5 flex items-center gap-4">
@@ -211,12 +339,8 @@ export default function RewardsPage() {
       )}
 
       {/* How to earn */}
-      <div className="mx-4 mb-4 grid grid-cols-3 gap-2">
-        {[
-          { icon: "📤", label: "+50 pts", sub: "per upload" },
-          { icon: "❤️", label: "+5 pts", sub: "per like" },
-          { icon: "⭐", label: "+200 pts", sub: "if featured" },
-        ].map((item) => (
+      <div className="mx-4 mb-4 grid grid-cols-2 gap-2">
+        {earnCards.map((item) => (
           <div key={item.label} className="bg-secondary/50 border border-border rounded-xl p-3 text-center">
             <div className="text-2xl mb-1">{item.icon}</div>
             <p className="text-xs font-black text-electric">{item.label}</p>
@@ -283,6 +407,26 @@ export default function RewardsPage() {
         </div>
       )}
 
+      {user && (
+        <div className="px-4 mb-5">
+          <p className="text-sm font-bold text-foreground mb-3">Milestones</p>
+          <div className="grid grid-cols-2 gap-2">
+            {milestones.map((milestone) => (
+              <div
+                key={milestone.label}
+                className={`rounded-xl border px-3 py-2 text-xs ${
+                  milestone.done
+                    ? "border-green-500/50 bg-green-500/10 text-green-300"
+                    : "border-border bg-secondary/20 text-muted-foreground"
+                }`}
+              >
+                {milestone.done ? "✅" : "⏳"} {milestone.label}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="px-4 pb-8">
         <p className="text-sm font-bold text-foreground mb-3 flex items-center gap-2">
           <Star className="w-4 h-4 text-stadium-yellow" /> Available Rewards
@@ -343,6 +487,55 @@ export default function RewardsPage() {
           </div>
         )}
       </div>
+
+      {user && (
+        <div className="px-4 pb-10">
+          <p className="text-sm font-bold text-foreground mb-3">Recent Points Activity</p>
+          <div className="space-y-2">
+            {recentTransactions.length === 0 ? (
+              <div className="rounded-xl border border-border bg-secondary/20 p-3 text-xs text-muted-foreground">
+                No points activity yet.
+              </div>
+            ) : (
+              recentTransactions.map((tx) => (
+                <div key={tx.id} className="rounded-xl border border-border bg-secondary/20 p-3 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-foreground">{tx.reason}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {new Date(tx.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <span className={`text-sm font-black ${tx.amount >= 0 ? "text-green-400" : "text-destructive"}`}>
+                    {tx.amount >= 0 ? "+" : ""}
+                    {tx.amount}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+
+          <p className="text-sm font-bold text-foreground mt-5 mb-3">Recent Redemptions</p>
+          <div className="space-y-2">
+            {recentRedemptions.length === 0 ? (
+              <div className="rounded-xl border border-border bg-secondary/20 p-3 text-xs text-muted-foreground">
+                No rewards redeemed yet.
+              </div>
+            ) : (
+              recentRedemptions.map((redemption) => (
+                <div key={redemption.id} className="rounded-xl border border-border bg-secondary/20 p-3 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-foreground">Reward redemption</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {new Date(redemption.redeemed_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <span className="text-sm font-black text-destructive">-{redemption.points_spent}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

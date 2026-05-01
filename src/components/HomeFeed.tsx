@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { Heart, MapPin, Play, Share2, MessageCircle, Search, Repeat2, SlidersHorizontal, X, BadgeCheck } from "lucide-react";
+import { Heart, MapPin, Play, Share2, MessageCircle, Search, Repeat2, SlidersHorizontal, X, BadgeCheck, Volume2, VolumeX, Mic } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import { useNavigate } from "react-router-dom";
@@ -7,6 +7,8 @@ import { useToast } from "@/hooks/use-toast";
 import { getYouTubeEmbedUrl } from "@/lib/video";
 import { DEMO_CLIPS } from "@/lib/demoClips";
 import { mergeFeedPreferences } from "@/lib/feedPreferences";
+import { CHANNELS, loadFollowedChannels } from "@/lib/channels";
+import { listLiveClips, repostClip, toggleClipLike } from "@/services/clipsService";
 import CommentSection from "@/components/CommentSection";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import NotificationBell from "@/components/NotificationBell";
@@ -24,6 +26,8 @@ const QUICK_SPORT_FILTERS = [
   { label: "Cricket", query: "Cricket", icon: "🏏" },
   { label: "Volleyball", query: "Volleyball", icon: "🏐" },
 ];
+const FEED_VOLUME_LEVEL_KEY = "fanclips_feed_volume_level";
+const VOLUME_PRESETS = [0, 0.25, 0.5, 0.75, 1];
 
 interface ClipProfile {
   username: string;
@@ -71,6 +75,7 @@ export default function HomeFeed({
   const [searchQuery, setSearchQuery] = useState("");
   const [topMenuVisible, setTopMenuVisible] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [followedChannelIds, setFollowedChannelIds] = useState<string[]>([]);
   const { user, profile, refreshProfile } = useAuth();
   const feedPrefs = useMemo(() => mergeFeedPreferences(profile, user?.id), [profile, user?.id]);
   const navigate = useNavigate();
@@ -85,9 +90,31 @@ export default function HomeFeed({
   const [watchDragY, setWatchDragY] = useState(0);
   const watchTouchRef = useRef({ startY: 0, active: false });
   const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [volumeLevel, setVolumeLevel] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(FEED_VOLUME_LEVEL_KEY);
+      if (!raw) return 0;
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) return 0;
+      return Math.max(0, Math.min(1, parsed));
+    } catch {
+      return 0;
+    }
+  });
+  const [isVolumeMenuOpen, setIsVolumeMenuOpen] = useState(false);
+  const volumeMenuRef = useRef<HTMLDivElement | null>(null);
   const [chatDragY, setChatDragY] = useState(0);
   const chatTouchRef = useRef({ startY: 0, active: false });
   const { toast } = useToast();
+  const isMuted = volumeLevel <= 0;
+
+  useEffect(() => {
+    if (!user) {
+      setFollowedChannelIds([]);
+      return;
+    }
+    setFollowedChannelIds(loadFollowedChannels(user.id));
+  }, [user]);
 
   useEffect(() => {
     if (audioUnlocked) return;
@@ -96,22 +123,38 @@ export default function HomeFeed({
     return () => window.removeEventListener("pointerdown", unlock);
   }, [audioUnlocked]);
 
+  useEffect(() => {
+    localStorage.setItem(FEED_VOLUME_LEVEL_KEY, String(volumeLevel));
+    Object.values(videoRefs.current).forEach((video) => {
+      if (!video) return;
+      video.volume = volumeLevel;
+      video.muted = isMuted || !audioUnlocked;
+    });
+  }, [volumeLevel, isMuted, audioUnlocked]);
+
+  useEffect(() => {
+    if (!isVolumeMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (volumeMenuRef.current && !volumeMenuRef.current.contains(target)) {
+        setIsVolumeMenuOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [isVolumeMenuOpen]);
+
+  useEffect(() => {
+    setIsVolumeMenuOpen(false);
+  }, [activeClipId]);
+
   const fetchClips = useCallback(async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("clips")
-        .select(`
-          id, title, caption, section_tag, game_tag, thumbnail_url, video_url,
-          likes_count, ai_processed, ai_title, ai_caption, status, created_at, user_id, is_hidden
-        `)
-        .eq("status", "live")
-        .eq("is_hidden", false)
-        .order("created_at", { ascending: false })
-        .limit(50);
-
-      if (error) throw error;
-      if (!data || data.length === 0) {
+      const clipsResult = await listLiveClips(50);
+      if (clipsResult.error) throw new Error(clipsResult.error);
+      const data = clipsResult.data;
+      if (data.length === 0) {
         setClips(
           DEMO_CLIPS.map((c) => ({
             ...c,
@@ -227,12 +270,23 @@ export default function HomeFeed({
         }));
 
       const shuffle = <T,>(arr: T[]) => [...arr].sort(() => Math.random() - 0.5);
+      const followedKeywords = new Set(
+        followedChannelIds
+          .map((id) => CHANNELS.find((channel) => channel.id === id))
+          .filter((channel): channel is (typeof CHANNELS)[number] => Boolean(channel))
+          .flatMap((channel) => channel.keywords.map((k) => k.toLowerCase()))
+      );
       const scoreByPreference = (clip: Clip) => {
         const text = `${clip.title} ${clip.caption ?? ""} ${clip.ai_title ?? ""} ${clip.ai_caption ?? ""} ${clip.game_tag ?? ""} ${clip.section_tag ?? ""}`.toLowerCase();
         const sportScore = feedPrefs.preferred_sports.some((s) => text.includes(s.toLowerCase())) ? 2 : 0;
         const teamScore = feedPrefs.preferred_teams.some((s) => text.includes(s.toLowerCase())) ? 1 : 0;
         const locScore = feedPrefs.preferred_locations.some((s) => text.includes(s.toLowerCase())) ? 1 : 0;
-        return sportScore + teamScore + locScore;
+        const channelScore =
+          followedKeywords.size > 0 &&
+          [...followedKeywords].some((keyword) => keyword && text.includes(keyword))
+            ? 3
+            : 0;
+        return sportScore + teamScore + locScore + channelScore;
       };
       const mapped = feedMode === "friends" && user
         ? mappedAll.filter((c) => c.user_id === user.id || following.has(c.user_id))
@@ -257,7 +311,7 @@ export default function HomeFeed({
     } finally {
       setLoading(false);
     }
-  }, [user, toast, feedMode, feedPrefs]);
+  }, [user, toast, feedMode, feedPrefs, followedChannelIds]);
 
   useEffect(() => {
     fetchClips();
@@ -291,7 +345,8 @@ export default function HomeFeed({
       const video = videoRefs.current[clip.id];
       if (!video) return;
       if (clip.id === activeClipId) {
-        video.muted = !audioUnlocked;
+        video.volume = volumeLevel;
+        video.muted = isMuted || !audioUnlocked;
         void video.play().catch(async () => {
           // Mobile autoplay policies may block unmuted playback until a gesture.
           video.muted = true;
@@ -301,7 +356,7 @@ export default function HomeFeed({
         video.pause();
       }
     });
-  }, [activeClipId, clips, watchingClip, audioUnlocked]);
+  }, [activeClipId, clips, watchingClip, audioUnlocked, isMuted, volumeLevel]);
 
   const visibleClips = !searchQuery.trim()
     ? clips
@@ -393,10 +448,11 @@ export default function HomeFeed({
         })
       );
 
-      const result = await supabase.rpc("toggle_clip_like", { p_clip_id: clipId, p_user_id: user.id });
-      const data = result.data as { liked: boolean; likes_count: number } | null;
-      if (data) {
-        setClips((prev) => prev.map((c) => (c.id === clipId ? { ...c, liked: data.liked, likes_count: data.likes_count } : c)));
+      const result = await toggleClipLike(clipId, user.id);
+      if (result.data) {
+        setClips((prev) =>
+          prev.map((c) => (c.id === clipId ? { ...c, liked: result.data.liked, likes_count: result.data.likes_count } : c)),
+        );
         void refreshProfile();
       } else {
         setClips((prev) =>
@@ -414,6 +470,7 @@ export default function HomeFeed({
 
   const onFeedVideoTap = useCallback(
     (clip: Clip, event: React.MouseEvent<HTMLDivElement>) => {
+      setIsVolumeMenuOpen(false);
       const rect = event.currentTarget.getBoundingClientRect();
       const centerX = rect.left + rect.width / 2;
       const centerY = rect.top + rect.height / 2;
@@ -423,7 +480,8 @@ export default function HomeFeed({
         if (video) {
           if (video.paused) {
             setAudioUnlocked(true);
-            video.muted = false;
+            video.volume = volumeLevel;
+            video.muted = isMuted;
             void video.play().catch(async () => {
               video.muted = true;
               await video.play().catch(() => undefined);
@@ -458,7 +516,7 @@ export default function HomeFeed({
         openWatchTimerRef.current = null;
       }, 280);
     },
-    [handleLike]
+    [handleLike, isMuted, volumeLevel]
   );
 
   const handleRepost = useCallback(
@@ -479,12 +537,12 @@ export default function HomeFeed({
         toast({ title: "Already reposted", description: "You’ve shared this one already." });
         return;
       }
-      const { data, error } = await supabase.rpc("repost_clip", { p_clip_id: clip.id });
-      const payload = data as { ok?: boolean; already?: boolean; error?: string } | null;
-      if (error) {
-        toast({ title: "Repost failed", description: error.message, variant: "destructive" });
+      const result = await repostClip(clip.id);
+      if (result.error) {
+        toast({ title: "Repost failed", description: result.error, variant: "destructive" });
         return;
       }
+      const payload = result.data;
       if (payload?.error === "own_clip") {
         toast({ title: "Your clip", description: "You can’t repost your own video." });
         return;
@@ -533,10 +591,14 @@ export default function HomeFeed({
 
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 rounded-full gradient-electric mx-auto mb-3 animate-pulse" />
-          <p className="text-muted-foreground text-sm">Loading highlights...</p>
+      <div className="flex h-full flex-col items-center justify-center gap-5 p-8">
+        <div className="relative h-14 w-14" aria-hidden>
+          <div className="absolute inset-0 rounded-full border-2 border-muted/50 border-t-primary motion-reduce:animate-none animate-spin" />
+          <div className="absolute inset-[5px] rounded-full bg-card/80" />
+        </div>
+        <div className="max-w-[220px] space-y-2 text-center">
+          <p className="text-sm font-semibold text-foreground">Loading your feed</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">Pulling the latest highlights from the stadium.</p>
         </div>
       </div>
     );
@@ -544,28 +606,28 @@ export default function HomeFeed({
 
   if (clips.length === 0) {
     return (
-      <div className="h-full flex flex-col items-center justify-center p-8 text-center">
-        <div className="w-20 h-20 rounded-full gradient-electric flex items-center justify-center glow-blue mb-4">
-          <Play className="w-10 h-10 text-primary-foreground ml-1" />
+      <div className="flex h-full flex-col items-center justify-center p-8 text-center">
+        <div className="mb-5 flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-[hsl(240_100%_58%)] text-primary-foreground shadow-[0_12px_40px_hsl(210_100%_50%/0.35)] ring-1 ring-white/15">
+          <Play className="ml-0.5 h-10 w-10" strokeWidth={2} />
         </div>
-        <h2 className="text-xl font-bold text-foreground mb-2">No clips yet!</h2>
-        <p className="text-muted-foreground text-sm">Be the first to upload a stadium highlight 🏟️</p>
+        <h2 className="mb-2 text-xl font-bold tracking-tight text-foreground">No clips yet</h2>
+        <p className="max-w-xs text-sm leading-relaxed text-muted-foreground">Be the first to upload a stadium highlight and show up here.</p>
       </div>
     );
   }
 
   if (visibleClips.length === 0) {
     return (
-      <div className="h-full flex flex-col items-center justify-center p-8 text-center">
-        <div className="w-20 h-20 rounded-full gradient-electric flex items-center justify-center glow-blue mb-4">
-          <Play className="w-10 h-10 text-primary-foreground ml-1" />
+      <div className="flex h-full flex-col items-center justify-center p-8 text-center">
+        <div className="mb-5 flex h-20 w-20 items-center justify-center rounded-2xl border border-border/80 bg-card/80 text-muted-foreground shadow-inner">
+          <Search className="h-9 w-9" strokeWidth={1.75} />
         </div>
-        <h2 className="text-xl font-bold text-foreground mb-2">No matches</h2>
-        <p className="text-muted-foreground text-sm">Try another search, or clear the bar to see everything.</p>
+        <h2 className="mb-2 text-xl font-bold tracking-tight text-foreground">No matches</h2>
+        <p className="mb-5 max-w-xs text-sm leading-relaxed text-muted-foreground">Try another search or clear filters to see the full feed.</p>
         <button
           type="button"
           onClick={() => setSearchQuery("")}
-          className="mt-4 text-sm font-semibold text-electric"
+          className="focus-ring rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-md transition active:scale-[0.98]"
         >
           Clear search
         </button>
@@ -575,35 +637,38 @@ export default function HomeFeed({
 
   return (
     <div className="relative h-full flex flex-col">
-      <button
-        type="button"
-        onClick={() => setTopMenuVisible((v) => !v)}
-        className="fixed right-3 top-24 z-[65] w-10 h-10 rounded-full border border-white/20 bg-black/45 backdrop-blur flex items-center justify-center text-white"
-        aria-label={topMenuVisible ? "Hide top menu" : "Show top menu"}
-      >
-        {topMenuVisible ? <X className="w-4 h-4" /> : <SlidersHorizontal className="w-4 h-4" />}
-      </button>
-      <div className="fixed right-3 top-36 z-[65]">
-        <NotificationBell onClick={() => setNotifOpen((v) => !v)} />
+      <div className="fixed right-2.5 top-24 z-[65] flex w-[3.35rem] flex-col items-center gap-1.5 rounded-[1.75rem] border border-white/18 bg-black/45 p-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => setTopMenuVisible((v) => !v)}
+          className="focus-ring-inset-dark flex h-11 w-11 items-center justify-center rounded-full border border-white/22 bg-white/8 text-white transition hover:bg-white/12"
+          aria-label={topMenuVisible ? "Hide top menu" : "Show top menu"}
+        >
+          {topMenuVisible ? <X className="h-4 w-4" /> : <SlidersHorizontal className="h-4 w-4" />}
+        </button>
+        <NotificationBell
+          onClick={() => setNotifOpen((v) => !v)}
+          className="focus-ring-inset-dark flex h-11 w-11 items-center justify-center rounded-full border border-white/22 bg-white/8 p-0 text-white transition hover:bg-white/12"
+        />
       </div>
       <NotificationsPopover open={notifOpen} onClose={() => setNotifOpen(false)} />
 
       {topMenuVisible && (
-        <div className="shrink-0 z-30 px-3 pt-2 pb-2 space-y-2 bg-gradient-to-b from-background/95 via-background/90 to-background/85 backdrop-blur-md border-b border-border/40">
+        <div className="z-30 shrink-0 space-y-2.5 border-b border-border/50 bg-gradient-to-b from-background via-background/95 to-background/88 px-3 pb-3 pt-2.5 shadow-[0_12px_40px_hsl(220_20%_4%/0.65)] backdrop-blur-md">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search football, teams, cities, #tags, @creators…"
-              className="w-full h-10 pl-9 pr-3 rounded-2xl bg-black/50 border border-white/10 text-sm text-foreground placeholder:text-muted-foreground/90 shadow-inner focus:outline-none focus:ring-2 focus:ring-electric/30 focus:border-electric/40"
+              placeholder="Search sports, teams, cities, #tags, @creators…"
+              className="h-11 w-full rounded-2xl border border-white/12 bg-black/45 pl-10 pr-3 text-sm text-foreground shadow-inner placeholder:text-muted-foreground/85 focus:border-primary/45 focus:outline-none focus:ring-2 focus:ring-primary/25"
             />
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => setFeedMode("all")}
-              className={`px-3 py-1.5 text-[11px] font-semibold rounded-full border transition-colors ${feedMode === "all" ? "bg-electric/25 border-electric/50 text-electric shadow-[0_0_12px_rgba(59,130,246,0.25)]" : "bg-black/35 border-border/80 text-muted-foreground hover:text-foreground"}`}
+              className={`rounded-full border px-3.5 py-1.5 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background ${feedMode === "all" ? "border-primary/45 bg-primary/20 text-primary shadow-[0_0_14px_hsl(210_100%_56%/0.2)]" : "border-border/70 bg-black/40 text-muted-foreground hover:text-foreground"}`}
             >
               For you
             </button>
@@ -616,7 +681,7 @@ export default function HomeFeed({
                 }
                 setFeedMode("friends");
               }}
-              className={`px-3 py-1.5 text-[11px] font-semibold rounded-full border transition-colors ${feedMode === "friends" ? "bg-electric/25 border-electric/50 text-electric shadow-[0_0_12px_rgba(59,130,246,0.25)]" : "bg-black/35 border-border/80 text-muted-foreground hover:text-foreground"}`}
+              className={`rounded-full border px-3.5 py-1.5 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background ${feedMode === "friends" ? "border-primary/45 bg-primary/20 text-primary shadow-[0_0_14px_hsl(210_100%_56%/0.2)]" : "border-border/70 bg-black/40 text-muted-foreground hover:text-foreground"}`}
             >
               Friends
             </button>
@@ -629,7 +694,7 @@ export default function HomeFeed({
                     type="button"
                     onClick={() => setSearchQuery(active ? "" : sport.query)}
                     title={sport.label}
-                    className={`h-7 w-7 shrink-0 rounded-full border text-[13px] grid place-items-center transition-colors ${active ? "bg-electric/20 border-electric/45 shadow-[0_0_8px_rgba(59,130,246,0.22)]" : "bg-black/40 border-border/70 hover:border-border"}`}
+                    className={`grid h-8 w-8 shrink-0 place-items-center rounded-full border text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 focus-visible:ring-offset-2 focus-visible:ring-offset-background ${active ? "border-primary/45 bg-primary/18 shadow-[0_0_10px_hsl(210_100%_56%/0.22)]" : "border-border/70 bg-black/40 hover:border-border"}`}
                   >
                     <span aria-hidden>{sport.icon}</span>
                   </button>
@@ -673,7 +738,10 @@ export default function HomeFeed({
                 ref={(node) => { videoRefs.current[clip.id] = node; }}
                 src={clip.video_url}
                 className="w-full h-full object-cover"
-                muted={!audioUnlocked}
+                muted={isMuted || !audioUnlocked}
+                onLoadedMetadata={(e) => {
+                  e.currentTarget.volume = volumeLevel;
+                }}
                 playsInline
                 preload="metadata"
                 onEnded={() => handleVideoEnded(clip.id)}
@@ -711,14 +779,14 @@ export default function HomeFeed({
                 </div>
               </div>
             )}
-            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex flex-col gap-2.5 z-20 items-center">
+            <div className="absolute right-2.5 top-1/2 z-20 flex w-[3.35rem] -translate-y-1/2 flex-col items-center gap-1.5 rounded-[1.75rem] border border-white/18 bg-black/40 p-1.5 shadow-[0_8px_28px_rgba(0,0,0,0.4)] backdrop-blur-md">
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   navigate(`/u/${clip.user_id}`);
                 }}
-                className="w-12 h-12 rounded-full bg-black/40 border border-white/20 backdrop-blur flex items-center justify-center active:scale-95 touch-manipulation"
+                className="focus-ring-inset-dark flex h-11 w-11 touch-manipulation items-center justify-center rounded-full border border-white/22 bg-white/8 transition hover:bg-white/12 active:scale-95 motion-reduce:active:scale-100"
                 title="Uploader profile"
               >
                 <span className="text-xs font-bold text-white">
@@ -731,9 +799,9 @@ export default function HomeFeed({
                   e.stopPropagation();
                   setChatClip(clip);
                 }}
-                className="w-12 h-12 rounded-full bg-black/40 border border-white/20 backdrop-blur flex items-center justify-center active:scale-95 touch-manipulation"
+                className="focus-ring-inset-dark flex h-11 w-11 touch-manipulation items-center justify-center rounded-full border border-white/22 bg-white/8 transition hover:bg-white/12 active:scale-95 motion-reduce:active:scale-100"
               >
-                <MessageCircle className="w-4 h-4 text-white" />
+                <MessageCircle className="h-4 w-4 text-white" />
               </button>
               <button
                 type="button"
@@ -741,10 +809,81 @@ export default function HomeFeed({
                   e.stopPropagation();
                   setShareClip(clip);
                 }}
-                className="w-12 h-12 rounded-full bg-black/40 border border-white/20 backdrop-blur flex items-center justify-center active:scale-95 touch-manipulation"
+                className="focus-ring-inset-dark flex h-11 w-11 touch-manipulation items-center justify-center rounded-full border border-white/22 bg-white/8 transition hover:bg-white/12 active:scale-95 motion-reduce:active:scale-100"
               >
-                <Share2 className="w-4 h-4 text-white" />
+                <Share2 className="h-4 w-4 text-white" />
               </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!user) {
+                    toast({ title: "Sign in required", description: "Sign in to record a live reaction.", variant: "destructive" });
+                    return;
+                  }
+                  if (clip.is_demo) {
+                    toast({ title: "Demo clip", description: "Reactions aren’t available on demo videos." });
+                    return;
+                  }
+                  if (clip.user_id === user.id) {
+                    toast({ title: "Your clip", description: "Record reactions on someone else’s video." });
+                    return;
+                  }
+                  navigate(`/clip/${clip.id}/reaction`);
+                }}
+                disabled={Boolean(clip.is_demo || (user && clip.user_id === user.id))}
+                title="Record live reaction"
+                aria-label="Record live reaction"
+                className="focus-ring-inset-dark flex h-11 w-11 touch-manipulation items-center justify-center rounded-full border border-electric/35 bg-electric/15 transition hover:bg-electric/25 disabled:pointer-events-none disabled:opacity-40 active:scale-95 motion-reduce:active:scale-100"
+              >
+                <Mic className="h-4 w-4 text-electric" />
+              </button>
+              <div className="relative" ref={activeClipId === clip.id ? volumeMenuRef : undefined}>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsVolumeMenuOpen((prev) => !prev);
+                  }}
+                  className="focus-ring-inset-dark flex h-11 w-11 touch-manipulation items-center justify-center rounded-full border border-white/22 bg-white/8 transition hover:bg-white/12 active:scale-95 motion-reduce:active:scale-100"
+                  aria-label="Open volume controls"
+                  title="Open volume controls"
+                >
+                  {isMuted ? <VolumeX className="h-4 w-4 text-white" /> : <Volume2 className="h-4 w-4 text-white" />}
+                </button>
+                {isVolumeMenuOpen && activeClipId === clip.id && (
+                  <div
+                    className="absolute right-14 top-1/2 -translate-y-1/2 w-24 rounded-2xl border border-white/20 bg-black/75 p-2 backdrop-blur"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <p className="mb-1.5 px-1 text-[10px] font-semibold text-white/80">Volume</p>
+                    <div className="space-y-1">
+                      {VOLUME_PRESETS.map((level) => {
+                        const selected = Math.abs(volumeLevel - level) < 0.01;
+                        const label = level === 0 ? "Mute" : `${Math.round(level * 100)}%`;
+                        return (
+                          <button
+                            key={label}
+                            type="button"
+                            onClick={() => {
+                              setVolumeLevel(level);
+                              if (level > 0) setAudioUnlocked(true);
+                              setIsVolumeMenuOpen(false);
+                            }}
+                            className={`h-7 w-full rounded-lg border text-[11px] font-semibold transition-colors ${
+                              selected
+                                ? "border-electric/50 bg-electric/30 text-white"
+                                : "border-white/10 bg-white/5 text-white/90 hover:bg-white/10"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={(e) => {
@@ -753,9 +892,9 @@ export default function HomeFeed({
                 }}
                 disabled={Boolean(clip.reposted || clip.user_id === user?.id || clip.is_demo)}
                 title="Repost (+5 pts)"
-                className="relative w-12 h-12 rounded-full bg-black/40 border border-white/20 backdrop-blur flex items-center justify-center disabled:opacity-40 active:scale-95 touch-manipulation"
+                className="focus-ring-inset-dark relative flex h-11 w-11 touch-manipulation items-center justify-center rounded-full border border-white/22 bg-white/8 transition hover:bg-white/12 disabled:pointer-events-none disabled:opacity-40 active:scale-95 motion-reduce:active:scale-100"
               >
-                <Repeat2 className={`w-4 h-4 ${clip.reposted ? "text-electric" : "text-white"}`} />
+                <Repeat2 className={`h-4 w-4 ${clip.reposted ? "text-primary" : "text-white"}`} />
                 <span className="absolute -bottom-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-black/70 border border-white/30 text-[10px] leading-4 font-bold text-white tabular-nums text-center">
                   {clip.repost_count}
                 </span>
@@ -766,9 +905,9 @@ export default function HomeFeed({
                   e.stopPropagation();
                   void handleLike(clip.id);
                 }}
-                className="relative w-12 h-12 rounded-full bg-black/40 border border-white/20 backdrop-blur flex items-center justify-center active:scale-95 touch-manipulation"
+                className="focus-ring-inset-dark relative flex h-11 w-11 touch-manipulation items-center justify-center rounded-full border border-white/22 bg-white/8 transition hover:bg-white/12 active:scale-95 motion-reduce:active:scale-100"
               >
-                <Heart className={`w-5 h-5 ${clip.liked ? "fill-destructive text-destructive" : "text-white"}`} />
+                <Heart className={`h-5 w-5 ${clip.liked ? "fill-destructive text-destructive" : "text-white"}`} />
                 <span className="absolute -bottom-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-black/70 border border-white/30 text-[10px] leading-4 font-bold text-white tabular-nums text-center">
                   {clip.likes_count}
                 </span>
@@ -892,6 +1031,10 @@ export default function HomeFeed({
                         className="w-full h-full object-contain"
                         controls
                         autoPlay
+                        muted={isMuted || !audioUnlocked}
+                        onLoadedMetadata={(e) => {
+                          e.currentTarget.volume = volumeLevel;
+                        }}
                         playsInline
                       />
                     ) : watchingClip.thumbnail_url ? (

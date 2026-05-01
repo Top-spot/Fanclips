@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 import { uploadSchema, validateVideoFile } from "@/lib/validation";
+import { createClip } from "@/services/clipsService";
 
 interface Props {
   onDone: () => void;
@@ -105,21 +106,17 @@ export default function UploadPage({ onDone }: Props) {
         video_url = urlData.publicUrl;
       }
 
-      const { data: clip, error: insertError } = await supabase
-        .from("clips")
-        .insert({
-          user_id: user.id,
-          title: result.data.title,
-          caption: result.data.caption || null,
-          section_tag: result.data.section || null,
-          game_tag: result.data.game || null,
-          video_url,
-          status: "live" as const,
-        })
-        .select()
-        .single();
-
-      if (insertError) throw insertError;
+      const clipRes = await createClip({
+        user_id: user.id,
+        title: result.data.title,
+        caption: result.data.caption || null,
+        section_tag: result.data.section || null,
+        game_tag: result.data.game || null,
+        video_url,
+        status: "live",
+      });
+      if (clipRes.error) throw new Error(clipRes.error);
+      const clip = clipRes.data;
 
       if (clip && session) {
         const { data: fnData, error: fnError } = await supabase.functions.invoke("process-clip-ai", {
@@ -134,9 +131,19 @@ export default function UploadPage({ onDone }: Props) {
           typeof (fnData as { error?: unknown }).error === "string"
             ? (fnData as { error: string }).error
             : null;
+        const pointsErr =
+          fnData &&
+          typeof fnData === "object" &&
+          fnData !== null &&
+          "points_error" in fnData &&
+          typeof (fnData as { points_error?: unknown }).points_error === "string"
+            ? (fnData as { points_error: string }).points_error
+            : null;
         const edgeOk = !fnError && !remoteErr;
+        const needsClaimFallback = !edgeOk || !!pointsErr;
+        const aiFailed = !edgeOk;
 
-        if (!edgeOk) {
+        if (needsClaimFallback) {
           const { error: claimError } = await supabase.rpc("claim_clip_upload_points", { p_clip_id: clip.id });
           if (claimError) {
             console.error("claim_clip_upload_points", claimError);
@@ -147,7 +154,9 @@ export default function UploadPage({ onDone }: Props) {
           } else {
             toast({
               title: "Clip is live",
-              description: "AI couldn't run just now; your +50 upload points were added.",
+              description: aiFailed
+                ? "AI couldn't run just now; your +50 upload points were added."
+                : "Your upload points are on your account.",
             });
           }
         }

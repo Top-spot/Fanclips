@@ -49,16 +49,18 @@ export default function BottomNav({ activeTab, onTabChange, autoHide = false, fo
     <>
       {autoHide && !forceHidden && navHidden && (
         <button
+          type="button"
           onClick={() => setVisible(true)}
-          className="absolute bottom-2 left-1/2 -translate-x-1/2 z-50 w-16 h-5 rounded-full bg-card/75 border border-border/70 backdrop-blur-md flex items-center justify-center"
+          className="focus-ring fixed bottom-[calc(var(--safe-area-inset-bottom)+10px)] left-1/2 z-50 flex h-7 w-[4.25rem] -translate-x-1/2 items-center justify-center rounded-full border border-border/80 bg-card/90 shadow-card backdrop-blur-md md:hidden"
           aria-label="Show menu"
         >
-          <span className="w-8 h-1 rounded-full bg-muted-foreground/70" />
+          <span className="h-1 w-9 rounded-full bg-muted-foreground/60" />
         </button>
       )}
       <nav
-        className={`absolute bottom-2 left-2 right-2 md:left-4 md:right-4 rounded-2xl border border-border/70 bg-card/88 shadow-card backdrop-blur-xl flex items-center justify-around px-2 z-50 transition-transform duration-300 ${navHidden ? "translate-y-[130%]" : "translate-y-0"} h-14`}
-        style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0px)" }}
+        className={`fixed bottom-0 left-2 right-2 z-50 flex h-[72px] items-center justify-around rounded-[1.35rem] border border-border/80 bg-card/92 px-2 shadow-[0_-4px_32px_hsl(220_20%_2%/0.45)] backdrop-blur-xl transition-transform duration-300 ease-out motion-reduce:transition-none md:hidden ${navHidden ? "translate-y-[130%]" : "translate-y-0"}`}
+        style={{ paddingBottom: "max(var(--safe-area-inset-bottom), 0px)" }}
+        aria-label="Primary"
       >
       {tabs.map((tab) => {
         const isUpload = tab.id === "upload";
@@ -69,12 +71,13 @@ export default function BottomNav({ activeTab, onTabChange, autoHide = false, fo
           return (
             <button
               key={tab.id}
+              type="button"
               onClick={() => onTabChange(tab.id)}
-              className="flex flex-col items-center justify-center -mt-6 relative"
+              className="focus-ring relative -mt-6 flex min-h-11 min-w-11 flex-col items-center justify-center rounded-full"
               aria-label="Upload Clip"
             >
-              <div className={`w-12 h-12 rounded-full gradient-electric flex items-center justify-center transition-all shadow-lg ${
-                isActive ? "glow-blue scale-110" : "hover:scale-105"
+              <div className={`flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-primary to-[hsl(240_100%_58%)] shadow-lg transition-transform motion-reduce:transition-none ${
+                isActive ? "glow-blue scale-110 motion-reduce:scale-100" : "hover:scale-105 motion-reduce:hover:scale-100"
               }`}>
                 <Icon className="w-5 h-5 text-primary-foreground" strokeWidth={2.5} />
               </div>
@@ -85,10 +88,12 @@ export default function BottomNav({ activeTab, onTabChange, autoHide = false, fo
         return (
           <button
             key={tab.id}
+            type="button"
             onClick={() => onTabChange(tab.id)}
-            className={`flex flex-col items-center gap-0.5 flex-1 py-1 transition-all ${
+            className={`focus-ring flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1 transition-colors ${
               isActive ? "text-electric" : "text-muted-foreground hover:text-foreground"
             }`}
+            aria-label={tab.label}
           >
             <Icon
               className={`w-[18px] h-[18px] transition-transform ${isActive ? "scale-110" : ""}`}

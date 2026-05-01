@@ -66,6 +66,8 @@
     --sidebar-accent-foreground: 0 0% 90%;
     --sidebar-border: 220 14% 18%;
     --sidebar-ring: 210 100% 56%;
+    --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+    --bottom-nav-height: 92px;
   }
 }
 
@@ -78,7 +80,9 @@
     @apply bg-background text-foreground;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     overscroll-behavior: none;
+    color-scheme: dark;
   }
 
   html, body, #root {
@@ -168,5 +172,26 @@
   @keyframes shimmer {
     0% { background-position: -200% 0; }
     100% { background-position: 200% 0; }
+  }
+
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  .focus-ring-inset-dark {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-blue,
+  .pulse-yellow,
+  .ai-shimmer {
+    animation: none !important;
+  }
+
+  .ai-shimmer {
+    background: hsl(220 18% 9%);
+    background-size: auto;
   }
 }
