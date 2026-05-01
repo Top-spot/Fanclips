@@ -1,0 +1,24 @@
+---
+description: Fanclips open-project reminders (Supabase, dev server, env)
+alwaysApply: true
+---
+
+# Next session — pick up here
+
+## Supabase / database (unfinished)
+
+- Migrations in `supabase/migrations/` are **not** applied automatically. Before testing uploads, storage, and data fetch against production/staging:
+  - **Option A:** `npx supabase login` → `npx supabase link --project-ref zwnbuwacgdnxkkevswkq` (same ref as `.env.example`) → `npm run db:push` (or `npm run db:push:dry-run` first).
+  - **Option B:** Set **`SUPABASE_DB_URL`** to the **direct** Postgres URI from Dashboard → Settings → Database (`db.<ref>.supabase.co:5432`, not pooler `:6543`), then `npm run db:push`.
+- `supabase/config.toml` `project_id` should stay aligned with `VITE_SUPABASE_*` in `.env`.
+- Never commit `.env`; copy from `.env.example` for required `VITE_SUPABASE_URL` and publishable/anon key.
+
+## Local dev
+
+- **`npm run dev`** serves at **http://localhost:8080/** (see `vite.config.ts`, not port 5173 unless overridden).
+
+## Git / branch
+
+- Recent integration work lives on **`feature/agent-5-security-hardening`** (security, services layer, commentary, migrations).
+
+When resuming, ask the agent to **verify migrations are applied** and fix any RLS/storage errors surfaced by upload or fetch.
