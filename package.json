@@ -13,7 +13,9 @@
     "test:watch": "vitest",
     "supabase": "supabase",
     "supabase:login": "supabase login",
-    "supabase:link": "supabase link"
+    "supabase:link": "supabase link",
+    "db:push": "node scripts/db-push.mjs",
+    "db:push:dry-run": "node scripts/db-push.mjs --dry-run"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

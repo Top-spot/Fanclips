@@ -1,4 +1,5 @@
-project_id = "lejnkwzmwswduimtdnbg"
+# Matches VITE_SUPABASE_* in .env.example (run: npx supabase link --project-ref zwnbuwacgdnxkkevswkq)
+project_id = "zwnbuwacgdnxkkevswkq"
 
 [functions.process-clip-ai]
 verify_jwt = false
